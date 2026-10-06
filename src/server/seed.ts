@@ -20,6 +20,7 @@ interface SampleEmp extends Employee {
 const E = (o: Partial<SampleEmp> & Pick<SampleEmp, "id" | "name" | "dept" | "title">): SampleEmp => ({
   kind: "正社員",
   role: "employee",
+  workStyle: "fixed",
   workDays: [1, 2, 3, 4, 5],
   weeklyDays: 5,
   weeklyHours: 40,

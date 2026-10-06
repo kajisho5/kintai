@@ -1,6 +1,6 @@
 /** API の入出力の型（サーバーとフロントで共有） */
 import type { Alert, DayResult, Interval } from "../engine";
-import type { DayPlan, LeaveInfo, Outlook, Risk, RiskLevel, Role, TodayRow } from "./types";
+import type { DayPlan, LeaveInfo, Outlook, PeriodInfo, Risk, RiskLevel, Role, TodayRow, WorkStyle } from "./types";
 
 export interface EmpBrief {
   id: string;
@@ -48,6 +48,8 @@ export interface MonthSummary {
   legalInMin: number;
   overtimeMin: number;
   weeklyOvertimeMin: number;
+  /** 変形期間・清算期間の総枠を超えた時間外（変形労働時間制・フレックスタイム制のみ） */
+  periodOvertimeMin: number;
   nightMin: number;
   holidayMin: number;
 }
@@ -75,15 +77,41 @@ export interface AttendanceListResponse {
 }
 
 export interface AttendanceDetailResponse {
-  emp: EmpBrief & { weeklyDays: number; weeklyHours: number };
+  emp: EmpBrief & { weeklyDays: number; weeklyHours: number; workStyle: WorkStyle };
   ym: string;
   months: string[];
   today: string;
   month: MonthSummary;
+  /** 変形労働時間制・フレックスタイム制の社員の、変形期間・清算期間の状況 */
+  period?: PeriodInfo;
   risk: Risk;
   series: { ym: string; actual: number; proj: number }[];
   days: { plan: DayPlan; result?: DayResult }[];
 }
+
+// ---------------------------------------------------------------- シフト（勤務予定）
+
+export interface ScheduleView {
+  empId: string;
+  date: string;
+  kind: "work" | "off" | "legal_off";
+  start?: number;
+  end?: number;
+  breakMin: number;
+}
+
+export interface ScheduleResponse {
+  ym: string;
+  today: string;
+  holidays: Record<string, string>;
+  /** 勤務区分が変形・フレックスの社員は、シフトの入力が必要（先頭に並べる） */
+  employees: (EmpBrief & { workStyle: WorkStyle; workDays: number[]; baseMin: number; schedStart: number })[];
+  rows: ScheduleView[];
+}
+
+export type ScheduleItem =
+  | { empId: string; date: string; kind: "work"; start: number; end: number; breakMin: number }
+  | { empId: string; date: string; kind: "off" | "legal_off" | "clear" };
 
 export interface RequestView {
   id: number;
@@ -142,6 +170,7 @@ export interface EmployeeAdmin {
   title: string;
   kind: "正社員" | "パート";
   role: Role;
+  workStyle: WorkStyle;
   email?: string;
   workDays: number[];
   weeklyDays: number;
@@ -177,6 +206,9 @@ export type ImportResponse =
   | { ok: true; dryRun: true; count: number }
   | { ok: true; dryRun: false; count: number; credentials: { id: string; name: string; tempPassword: string }[] };
 
+/** シフトの取り込み結果（一時パスワードはない） */
+export type ScheduleImportResponse = Exclude<ImportResponse, { dryRun: false }> | { ok: true; dryRun: false; count: number };
+
 export interface HolidayRow {
   date: string;
   name: string;
@@ -187,6 +219,18 @@ export interface SettingsResponse {
   company: { name: string; code: string };
   specialClause: boolean;
   fyStartMonth: number;
+  /** 法定休日の曜日（0=日曜〜6=土曜） */
+  legalHolidayDow: number;
+  /** 週の法定労働時間が44時間（特例措置対象事業場） */
+  week44: boolean;
+  /** フレックスタイム制の清算期間（月数）と、区切りの起点月 */
+  flexMonths: number;
+  flexStartMonth: number;
+  /** 1年単位の変形期間の起点月 */
+  yearlyStartMonth: number;
+  /** フレックスタイム制のコアタイム（0:00 からの分）。なければ未設定 */
+  flexCoreStart?: number;
+  flexCoreEnd?: number;
   holidays: HolidayRow[];
   holidaysStale: boolean;
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Ledger, barsFor, deriveDay, type Employee, type PunchEvent } from "./index";
 
 const emp: Employee = {
-  id: "x1", name: "テスト 太郎", dept: "開発部", title: "", kind: "正社員", role: "employee",
+  id: "x1", name: "テスト 太郎", dept: "開発部", title: "", kind: "正社員", role: "employee", workStyle: "fixed",
   workDays: [1, 2, 3, 4, 5], weeklyDays: 5, weeklyHours: 40, baseMin: 480, schedStart: 540, hired: "2020-04-01", carry: 0,
 };
 let seq = 0;

@@ -2,6 +2,30 @@ import type { Alert, Interval, MonthResult } from "../engine";
 
 export type Role = "admin" | "employee";
 
+/** 勤務区分。fixed=通常 / monthly=1か月単位の変形 / yearly=1年単位の変形 / weekly=1週間単位の変形 / flex=フレックスタイム制 */
+export type WorkStyle = "fixed" | "monthly" | "yearly" | "weekly" | "flex";
+
+export const WORK_STYLES: readonly WorkStyle[] = ["fixed", "monthly", "yearly", "weekly", "flex"];
+
+export const WORK_STYLE_LABEL: Record<WorkStyle, string> = {
+  fixed: "通常（固定時間制）",
+  monthly: "1か月単位の変形労働時間制",
+  yearly: "1年単位の変形労働時間制",
+  weekly: "1週間単位の変形労働時間制",
+  flex: "フレックスタイム制",
+};
+
+/** シフト（勤務予定）の1日分。work=勤務 / off=休み / legal_off=法定休日として指定した休み */
+export interface ScheduleRow {
+  empId: string;
+  date: string;
+  kind: "work" | "off" | "legal_off";
+  /** 勤務の開始・終了（その日の 0:00 からの分。翌日にまたがる場合は 1440 以上） */
+  start?: number;
+  end?: number;
+  breakMin: number;
+}
+
 export interface Employee {
   id: string;
   name: string;
@@ -9,6 +33,7 @@ export interface Employee {
   title: string;
   kind: "正社員" | "パート";
   role: Role;
+  workStyle: WorkStyle;
   /** 所定労働日（0=日〜6=土） */
   workDays: number[];
   weeklyDays: number;
@@ -67,8 +92,46 @@ export interface DayPlan {
   note?: string;
 }
 
+/** 変形期間・清算期間の進み具合（変形労働時間制・フレックスタイム制の社員のみ） */
+export interface PeriodInfo {
+  style: WorkStyle;
+  start: string;
+  end: string;
+  /** 法定労働時間の総枠（期間全体） */
+  frameMin: number;
+  /** 前日までの実労働（法定休日労働を除く） */
+  workMin: number;
+  /** 期間全体の所定労働時間 */
+  contractMin: number;
+  /** 前日までの所定労働時間 */
+  contractSoFarMin: number;
+  /** 期間内に、ここまでに発生した時間外 */
+  overtimeMin: number;
+  /** 期間の残り日数（本日を含む） */
+  remainingDays: number;
+}
+
+export interface LedgerOptions {
+  specialClause: boolean;
+  fiscalStartMonth?: number;
+  /** 法定休日の曜日（0=日曜）。シフトで法定休日を指定した週は、その日が法定休日になる */
+  legalHolidayDow?: number;
+  /** 週の法定労働時間（分）。既定 2400（40時間）。特例措置対象事業場は 2640（44時間） */
+  weeklyLegalMin?: number;
+  /** フレックスタイム制の清算期間（1〜3か月）と、その区切りの起点月 */
+  flexMonths?: number;
+  flexStartMonth?: number;
+  /** 1年単位の変形期間の起点月（その月の1日から12か月） */
+  yearlyStartMonth?: number;
+  /** フレックスタイム制のコアタイム（0:00 からの分）。省略ならコアタイムなし */
+  flexCore?: { start: number; end: number };
+  schedules?: ScheduleRow[];
+}
+
 export interface MonthData {
   ym: string;
+  /** 変形労働時間制・フレックスタイム制の社員の、変形期間・清算期間の状況 */
+  period?: PeriodInfo;
   plans: DayPlan[];
   result: MonthResult;
   workDays: number;

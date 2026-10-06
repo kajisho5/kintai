@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calcDay, calcMonth, check36, grantDays, remainingObligation, requiredBreakMin, weekStart } from "./index";
+import { LIMITS_YEARLY_VARIABLE, calcDay, calcMonth, check36, grantDays, remainingObligation, requiredBreakMin, weekStart } from "./index";
 
 const h = (x: number) => x * 60;
 const t = (hh: number, mm = 0) => hh * 60 + mm;
@@ -220,5 +220,22 @@ describe("check36", () => {
   });
   it("月30hは警告なし", () => {
     expect(check36([m("2026-10", 30)], { hasSpecialClause: true })).toEqual([]);
+  });
+});
+
+describe("check36 の限度時間（1年単位の変形労働時間制）", () => {
+  const m = (month: string, ot: number) => ({ month, overtimeMin: ot * 60, legalHolidayMin: 0 });
+  it("対象期間が3か月を超える1年単位の変形労働時間制は、月42時間・年320時間が限度", () => {
+    const a = check36([m("2026-10", 43)], { hasSpecialClause: false, limits: LIMITS_YEARLY_VARIABLE });
+    expect(a.some((x) => x.code === "MONTH_OVER_45H" && x.level === "violation" && x.message.includes("月42時間"))).toBe(true);
+    expect(check36([m("2026-10", 43)], { hasSpecialClause: false }).some((x) => x.level === "violation")).toBe(false); // 原則なら45時間以内
+    const year = Array.from({ length: 8 }, (_, i) => m(`2026-0${i + 1}`, 41));
+    const y = check36(year, { hasSpecialClause: false, limits: LIMITS_YEARLY_VARIABLE });
+    expect(y.some((x) => x.code === "YEAR_OVER_360H" && x.level === "violation" && x.message.includes("年320時間"))).toBe(true);
+  });
+  it("特別条項がある場合は、月42時間を超えた回数を年6回までで数える", () => {
+    const hist = Array.from({ length: 7 }, (_, i) => m(`2026-0${i + 1}`, 43));
+    const a = check36(hist, { hasSpecialClause: true, limits: LIMITS_YEARLY_VARIABLE });
+    expect(a.some((x) => x.code === "MONTH_OVER_45H_COUNT" && x.level === "violation" && x.message.includes("月42時間超"))).toBe(true);
   });
 });

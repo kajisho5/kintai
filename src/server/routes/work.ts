@@ -38,6 +38,7 @@ function monthSummary(m: MonthData): MonthSummary {
     legalInMin: m.result.days.reduce((s, d) => s + d.legalInMin, 0),
     overtimeMin: m.result.overtimeMin,
     weeklyOvertimeMin: m.result.weeklyOvertimeMin,
+    periodOvertimeMin: m.result.periodOvertimeMin,
     nightMin: m.result.nightMin,
     holidayMin: m.result.legalHolidayMin,
   };
@@ -212,11 +213,12 @@ app.get("/api/attendance/:id", (c) => {
   if (!emp) throw new ApiError(404, "社員が見つかりません");
   const ym = ymParam(c, snap);
   const body: AttendanceDetailResponse = {
-    emp: { ...brief(emp), weeklyDays: emp.weeklyDays, weeklyHours: emp.weeklyHours },
+    emp: { ...brief(emp), weeklyDays: emp.weeklyDays, weeklyHours: emp.weeklyHours, workStyle: emp.workStyle },
     ym,
     months: snap.fyMonths,
     today: snap.today,
     month: monthSummary(snap.ledger.monthOf(emp, ym)),
+    period: snap.ledger.monthOf(emp, ym).period,
     risk: snap.ledger.riskOf(emp, ym),
     series: snap.ledger.overtimeSeries(emp, ym),
     days: snap.ledger.dayRows(emp, ym),

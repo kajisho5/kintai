@@ -32,7 +32,19 @@ export interface CheckOptions {
   hasSpecialClause: boolean;
   /** 上限に対して何割で warning を出すか（既定 0.8） */
   warnRatio?: number;
+  /**
+   * 時間外労働の限度時間（月・年）。既定は月45時間・年360時間。
+   * 対象期間が3か月を超える1年単位の変形労働時間制では、月42時間・年320時間になる（労基法36条・労基則）。
+   */
+  limits?: { monthMin: Minutes; yearMin: Minutes };
 }
+
+/** 原則の限度時間 */
+export const LIMITS_STANDARD = { monthMin: 45 * H, yearMin: 360 * H };
+/** 対象期間が3か月を超える1年単位の変形労働時間制の限度時間 */
+export const LIMITS_YEARLY_VARIABLE = { monthMin: 42 * H, yearMin: 320 * H };
+
+const hoursLabel = (m: Minutes) => `${m / H}時間`;
 
 /**
  * history は対象月を最後の要素とした時系列（古い→新しい）。
@@ -41,6 +53,7 @@ export interface CheckOptions {
  */
 export function check36(history: MonthlyTotals[], opts: CheckOptions): Alert[] {
   const warnRatio = opts.warnRatio ?? 0.8;
+  const { monthMin, yearMin } = opts.limits ?? LIMITS_STANDARD;
   const alerts: Alert[] = [];
   const cur = history[history.length - 1];
   if (!cur) return alerts;
@@ -76,24 +89,26 @@ export function check36(history: MonthlyTotals[], opts: CheckOptions): Alert[] {
     );
   }
 
-  // --- 月45時間 / 年360時間（原則）、特別条項（年720時間・年6回） ---
+  // --- 月の限度（原則45時間） / 年の限度（原則360時間）、特別条項（年720時間・年6回） ---
   const year = history.reduce((s, m) => s + m.overtimeMin, 0);
-  const over45Count = history.filter((m) => m.overtimeMin > 45 * H).length;
+  const overCount = history.filter((m) => m.overtimeMin > monthMin).length;
+  const mh = hoursLabel(monthMin);
+  const yh = hoursLabel(yearMin);
 
-  // 月45時間: 特別条項なしは違反。特別条項ありでも超過は「適用」として知らせる（年6回まで）
-  if (cur.overtimeMin > 45 * H) {
-    if (!opts.hasSpecialClause) push("MONTH_OVER_45H", "violation", "時間外労働が月45時間を超えています");
-    else push("MONTH_OVER_45H", "warning", `月45時間を超えています（特別条項の適用 年${over45Count}回目／年6回まで）`);
-  } else if (cur.overtimeMin > 45 * H * warnRatio) {
-    push("MONTH_OVER_45H", "warning", "時間外労働が月45時間に近づいています");
+  // 月の限度: 特別条項なしは違反。特別条項ありでも超過は「適用」として知らせる（年6回まで）
+  if (cur.overtimeMin > monthMin) {
+    if (!opts.hasSpecialClause) push("MONTH_OVER_45H", "violation", `時間外労働が月${mh}を超えています`);
+    else push("MONTH_OVER_45H", "warning", `月${mh}を超えています（特別条項の適用 年${overCount}回目／年6回まで）`);
+  } else if (cur.overtimeMin > monthMin * warnRatio) {
+    push("MONTH_OVER_45H", "warning", `時間外労働が月${mh}に近づいています`);
   }
 
   if (!opts.hasSpecialClause) {
-    if (year > 360 * H) push("YEAR_OVER_360H", "violation", "時間外労働が年360時間を超えています");
-    else if (year > 360 * H * warnRatio) push("YEAR_OVER_360H", "warning", "時間外労働が年360時間に近づいています");
+    if (year > yearMin) push("YEAR_OVER_360H", "violation", `時間外労働が年${yh}を超えています`);
+    else if (year > yearMin * warnRatio) push("YEAR_OVER_360H", "warning", `時間外労働が年${yh}に近づいています`);
   } else {
-    if (over45Count > 6) push("MONTH_OVER_45H_COUNT", "violation", "月45時間超が年6回を超えています");
-    else if (over45Count === 6 && cur.overtimeMin > 45 * H) push("MONTH_OVER_45H_COUNT", "warning", "月45時間超が年6回に達しました（次月以降は45時間以内に）");
+    if (overCount > 6) push("MONTH_OVER_45H_COUNT", "violation", `月${mh}超が年6回を超えています`);
+    else if (overCount === 6 && cur.overtimeMin > monthMin) push("MONTH_OVER_45H_COUNT", "warning", `月${mh}超が年6回に達しました（次月以降は${mh}以内に）`);
     if (year > 720 * H) push("YEAR_OVER_720H", "violation", "時間外労働が年720時間を超えています");
     else if (year > 720 * H * warnRatio) push("YEAR_OVER_720H", "warning", "時間外労働が年720時間に近づいています");
   }

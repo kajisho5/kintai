@@ -39,6 +39,8 @@ export interface MonthResult {
   /** 法定時間外 = 日単位超過 + 週40時間超過（法定休日労働は含まない） */
   overtimeMin: Minutes;
   weeklyOvertimeMin: Minutes;
+  /** 変形期間・清算期間（総枠）の超過による時間外。通常の勤務では 0 */
+  periodOvertimeMin: Minutes;
   legalHolidayMin: Minutes;
   nightMin: Minutes;
   /** 月60時間を超える時間外（割増率50%以上の対象） */

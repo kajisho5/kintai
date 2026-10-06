@@ -114,6 +114,26 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: 5,
+    name: "work_styles_and_schedules",
+    sql: `
+      -- 勤務区分: fixed=通常 / monthly=1か月単位の変形 / yearly=1年単位の変形 / weekly=1週間単位の変形 / flex=フレックス
+      ALTER TABLE employees ADD COLUMN work_style TEXT NOT NULL DEFAULT 'fixed' CHECK (work_style IN ('fixed','monthly','yearly','weekly','flex'));
+      -- シフト（勤務予定）。work=勤務 / off=休み / legal_off=法定休日（週1回の休日として指定した日）
+      CREATE TABLE schedules (
+        emp_id TEXT NOT NULL REFERENCES employees(id),
+        date TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('work','off','legal_off')),
+        start INTEGER,
+        end INTEGER,
+        break_min INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (emp_id, date),
+        CHECK (kind <> 'work' OR (start IS NOT NULL AND end IS NOT NULL AND end > start AND start >= 0 AND end <= 2880 AND break_min >= 0 AND break_min < end - start))
+      );
+      CREATE INDEX idx_schedules_date ON schedules (date);
+    `,
+  },
 ];
 
 export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): number[] {

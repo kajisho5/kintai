@@ -1,28 +1,41 @@
 import {
+  LEGAL_WEEKLY_MIN,
+  LIMITS_STANDARD,
+  LIMITS_YEARLY_VARIABLE,
   calcDay,
+  calcFlexPeriod,
   calcMonth,
+  calcVariablePeriod,
   check36,
   grantDays,
   remainingObligation,
+  weekStart,
   type DayInput,
   type DayResult,
   type Interval,
+  type MonthResult,
   type MonthlyTotals,
+  type PeriodDayInput,
+  type PeriodDayResult,
+  type PeriodResult,
 } from "../engine";
 import { barsFor } from "./bars";
-import { addDays, addMonths, datesOfMonth, diffDays, dowOf, fiscalStartYm, monthsBetween } from "./calendar";
+import { addDays, addMonths, datesBetween, datesOfMonth, diffDays, dowOf, fiscalStartYm, flexPeriod, lastDateOfMonth, monthsBetween, yearlyPeriod } from "./calendar";
 import type {
   Calendar,
   DayPlan,
   Employee,
+  LedgerOptions,
   LeaveInfo,
   LeaveRow,
   MonthData,
   Bar,
   Outlook,
+  PeriodInfo,
   PunchEvent,
   Risk,
   RiskLevel,
+  ScheduleRow,
   Shift,
   TodayRow,
 } from "./types";
@@ -30,6 +43,13 @@ import type {
 const SCHED_GRACE_MIN = 15;
 /** 出勤から退勤までの上限。これを超えて退勤が無い勤務は、日またぎで続いているのではなく打刻漏れとみなす */
 export const MAX_SHIFT_MIN = 20 * 60;
+
+interface PeriodComputed {
+  per: { start: string; end: string };
+  dates: string[];
+  result: PeriodResult;
+  byDate: Map<string, PeriodDayResult>;
+}
 
 interface Derived {
   in?: number;
@@ -63,13 +83,16 @@ export class Ledger {
   private leaves = new Map<string, Map<string, number>>();
   private monthCache = new Map<string, MonthData>();
   private riskCache = new Map<string, Risk>();
+  private schedules = new Map<string, ScheduleRow>();
+  private periodCache = new Map<string, PeriodComputed>();
 
   constructor(
     readonly cal: Calendar,
     events: PunchEvent[],
     leaves: LeaveRow[],
-    private readonly opts: { specialClause: boolean; fiscalStartMonth?: number; legalHolidayDow?: number },
+    private readonly opts: LedgerOptions,
   ) {
+    for (const r of opts.schedules ?? []) this.schedules.set(`${r.empId}|${r.date}`, r);
     for (const e of events) {
       const k = `${e.empId}|${e.date}`;
       const list = this.events.get(k);
@@ -115,18 +138,50 @@ export class Ledger {
     return { date: today, offset: 0, open: false };
   }
 
+  scheduleOf(empId: string, date: string): ScheduleRow | undefined {
+    return this.schedules.get(`${empId}|${date}`);
+  }
+
+  /** その日の勤務予定。シフトがあればそれ、なければ通常の週の予定（所定労働日・祝日を除く）。休みなら undefined */
+  plannedShift(emp: Employee, date: string): { start: number; end: number; breakMin: number; workMin: number } | undefined {
+    const row = this.scheduleOf(emp.id, date);
+    if (row) {
+      return row.kind === "work" ? { start: row.start!, end: row.end!, breakMin: row.breakMin, workMin: row.end! - row.start! - row.breakMin } : undefined;
+    }
+    if (!emp.workDays.includes(dowOf(date)) || this.cal.holidays[date]) return undefined;
+    const breakMin = plannedBreakLen(emp.baseMin);
+    return { start: emp.schedStart, end: emp.schedStart + emp.baseMin + breakMin, breakMin, workMin: emp.baseMin };
+  }
+
   private isScheduled(emp: Employee, date: string): boolean {
-    return emp.workDays.includes(dowOf(date)) && !this.cal.holidays[date];
+    return this.plannedShift(emp, date) !== undefined;
+  }
+
+  /**
+   * 法定休日か。シフトで法定休日を指定した週（日曜始まりの暦週）は、指定した日だけが法定休日。
+   * 指定がなければ、会社の設定の曜日（既定は日曜）。
+   */
+  isLegalHoliday(emp: Employee, date: string): boolean {
+    const ws = weekStart(date, 0);
+    for (let i = 0; i < 7; i++) {
+      if (this.scheduleOf(emp.id, addDays(ws, i))?.kind === "legal_off") return this.scheduleOf(emp.id, date)?.kind === "legal_off";
+    }
+    return dowOf(date) === this.legalDow;
+  }
+
+  private get weeklyLegalMin(): number {
+    return this.opts.weeklyLegalMin ?? LEGAL_WEEKLY_MIN;
   }
 
   // ------------------------------------------------------------ 日
 
   planOf(emp: Employee, date: string): DayPlan {
     if (emp.leftOn && date > emp.leftOn) return { date, kind: "off", breaks: [], note: "退職後" };
-    const w = dowOf(date);
     const hol = this.cal.holidays[date];
     const leave = this.leaveDaysOn(emp.id, date);
     const d = deriveDay(this.eventsOf(emp.id, date));
+    const legal = this.isLegalHoliday(emp, date);
+    const row = this.scheduleOf(emp.id, date);
 
     if (d.in !== undefined) {
       if (d.out === undefined) {
@@ -136,23 +191,33 @@ export class Ledger {
       if (d.out < d.in) return { date, kind: "incomplete", start: d.in, breaks: [], note: "打刻の不整合" };
       const breaks = [...d.breaks];
       if (d.openBreak !== undefined) breaks.push({ start: d.openBreak, end: d.out });
-      const offDay = w === this.legalDow || !!hol || !emp.workDays.includes(w);
-      const note = leave > 0 && leave < 1 ? "半休" : offDay ? (hol ? "祝日出勤" : "休日出勤") : undefined;
+      const offDay = legal || !this.isScheduled(emp, date);
+      const core = emp.workStyle === "flex" ? this.opts.flexCore : undefined;
+      const note =
+        leave > 0 && leave < 1
+          ? "半休"
+          : offDay
+            ? hol
+              ? "祝日出勤"
+              : "休日出勤"
+            : core && (d.in > core.start || d.out < core.end)
+              ? "コアタイム外"
+              : undefined;
       return {
         date,
         kind: "work",
         start: d.in,
         end: d.out,
         breaks,
-        isLegalHoliday: w === this.legalDow,
-        nextIsLegalHoliday: dowOf(addDays(date, 1)) === this.legalDow,
+        isLegalHoliday: legal,
+        nextIsLegalHoliday: this.isLegalHoliday(emp, addDays(date, 1)),
         note,
       };
     }
     if (leave > 0) return { date, kind: "leave", breaks: [], note: leave < 1 ? "半休" : "有給休暇" };
-    if (w === this.legalDow) return { date, kind: "off", breaks: [], note: "法定休日" };
-    if (hol) return { date, kind: "off", breaks: [], note: hol };
-    if (!emp.workDays.includes(w)) return { date, kind: "off", breaks: [], note: "所定休日" };
+    if (legal && !(row && row.kind === "work")) return { date, kind: "off", breaks: [], note: "法定休日" };
+    if (hol && !row) return { date, kind: "off", breaks: [], note: hol };
+    if (!this.isScheduled(emp, date)) return { date, kind: "off", breaks: [], note: row ? "休み" : "所定休日" };
     if (date < this.cal.today && date >= emp.hired) return { date, kind: "absent", breaks: [], note: "打刻なし" };
     return { date, kind: "off", breaks: [] };
   }
@@ -168,23 +233,47 @@ export class Ledger {
       .filter((d) => d < this.cal.today && d >= emp.hired && (!emp.leftOn || d <= emp.leftOn))
       .map((d) => this.planOf(emp, d));
     const worked = plans.filter((p) => p.kind === "work");
-    const input = (p: DayPlan): DayInput => ({
-      date: p.date,
-      work: { start: p.start!, end: p.end! },
-      breaks: p.breaks,
-      isLegalHoliday: p.isLegalHoliday,
-      nextIsLegalHoliday: p.nextIsLegalHoliday,
-    });
     const leaveMap = this.leaves.get(emp.id);
     const leaveDays = leaveMap
       ? datesOfMonth(ym)
           .filter((d) => d < this.cal.today)
           .reduce((s, d) => s + (leaveMap.get(d) ?? 0), 0)
       : 0;
+
+    let result: MonthResult;
+    let period: PeriodInfo | undefined;
+    if (emp.workStyle === "fixed") {
+      const input = (p: DayPlan): DayInput => ({
+        date: p.date,
+        work: { start: p.start!, end: p.end! },
+        breaks: p.breaks,
+        isLegalHoliday: p.isLegalHoliday,
+        nextIsLegalHoliday: p.nextIsLegalHoliday,
+      });
+      result = calcMonth(worked.map(input), 1, this.weeklyLegalMin);
+    } else {
+      const comp = this.periodComputed(emp, this.periodOf(emp, ym));
+      // 時間外は「発生した日」に付くので、その月の勤務日の分を合計すれば、月の時間外になる
+      const days = worked.map((p) => comp.byDate.get(p.date)!).map((d) => ({ ...d, dailyOvertimeMin: d.overtimeMin }));
+      const sum = (f: (d: PeriodDayResult) => number) => days.reduce((n, d) => n + f(d), 0);
+      const overtimeMin = sum((d) => d.overtimeMin);
+      result = {
+        days,
+        workMin: sum((d) => d.workMin),
+        overtimeMin,
+        weeklyOvertimeMin: sum((d) => d.weeklyOvertimeMin),
+        periodOvertimeMin: sum((d) => d.periodOvertimeMin),
+        legalHolidayMin: sum((d) => d.legalHolidayMin),
+        nightMin: sum((d) => d.nightMin),
+        overtimeOver60hMin: Math.max(0, overtimeMin - 60 * 60),
+      };
+      period = emp.workStyle === "weekly" ? undefined : this.periodInfo(emp, comp);
+    }
     const data: MonthData = {
       ym,
+      period,
       plans,
-      result: calcMonth(worked.map(input)),
+      result,
       workDays: worked.length,
       leaveDays,
       absentDays: plans.filter((p) => p.kind === "absent").length,
@@ -192,6 +281,124 @@ export class Ledger {
     };
     this.monthCache.set(key, data);
     return data;
+  }
+
+  // ---- 変形労働時間制・フレックスタイム制の期間 ----
+
+  /** 月 ym を含む変形期間・清算期間。1週間単位は、その月にかかる週をすべて含める */
+  private periodOf(emp: Employee, ym: string): { start: string; end: string } {
+    const first = `${ym}-01`;
+    switch (emp.workStyle) {
+      case "yearly":
+        return yearlyPeriod(first, this.opts.yearlyStartMonth ?? 4);
+      case "flex":
+        return flexPeriod(first, this.opts.flexStartMonth ?? 4, this.opts.flexMonths ?? 1);
+      case "weekly":
+        return { start: weekStart(first, 1), end: addDays(weekStart(lastDateOfMonth(ym), 1), 6) };
+      default:
+        return { start: first, end: lastDateOfMonth(ym) };
+    }
+  }
+
+  /** 期間内の1日分の入力。本日以降は勤務の実績なし（予定の所定労働時間だけを持つ） */
+  private periodInput(emp: Employee, date: string): PeriodDayInput {
+    const p = date < this.cal.today ? this.planOf(emp, date) : undefined;
+    return {
+      date,
+      work: p?.kind === "work" ? { start: p.start!, end: p.end! } : undefined,
+      breaks: p?.kind === "work" ? p.breaks : undefined,
+      isLegalHoliday: this.isLegalHoliday(emp, date),
+      nextIsLegalHoliday: this.isLegalHoliday(emp, addDays(date, 1)),
+      scheduledMin: this.plannedShift(emp, date)?.workMin ?? 0,
+    };
+  }
+
+  private computePeriod(emp: Employee, inputs: PeriodDayInput[]): PeriodResult {
+    const weeklyLegalMin = this.weeklyLegalMin;
+    if (emp.workStyle === "flex") return calcFlexPeriod(inputs, { weeklyLegalMin });
+    if (emp.workStyle !== "weekly") return calcVariablePeriod(inputs, { weeklyLegalMin });
+    // 1週間単位: 週ごとに独立して計算する
+    const days: PeriodDayResult[] = [];
+    let frameMin = 0;
+    let ordinaryMin = 0;
+    for (let i = 0; i < inputs.length; ) {
+      const wk = weekStart(inputs[i]!.date, 1);
+      let j = i;
+      while (j < inputs.length && weekStart(inputs[j]!.date, 1) === wk) j++;
+      const r = calcVariablePeriod(inputs.slice(i, j), { weeklyLegalMin });
+      days.push(...r.days);
+      frameMin += r.frameMin;
+      ordinaryMin += r.ordinaryMin;
+      i = j;
+    }
+    return { days, frameMin, ordinaryMin };
+  }
+
+  private periodComputed(emp: Employee, per: { start: string; end: string }): PeriodComputed {
+    const key = `${emp.id}|${emp.workStyle}|${per.start}`;
+    const hit = this.periodCache.get(key);
+    if (hit) return hit;
+    // 入社日より前・退職日より後は、期間に含めない（総枠は在籍した日数で按分される）
+    const from = per.start > emp.hired ? per.start : emp.hired;
+    const to = emp.leftOn && emp.leftOn < per.end ? emp.leftOn : per.end;
+    const dates = from <= to ? datesBetween(from, to) : [];
+    const result = this.computePeriod(emp, dates.map((d) => this.periodInput(emp, d)));
+    const byDate = new Map(dates.map((d, i) => [d, result.days[i]!]));
+    const comp: PeriodComputed = { per, dates, result, byDate };
+    this.periodCache.set(key, comp);
+    return comp;
+  }
+
+  private periodInfo(emp: Employee, comp: PeriodComputed): PeriodInfo {
+    const today = this.cal.today;
+    let contractMin = 0;
+    let contractSoFarMin = 0;
+    for (const d of comp.dates) {
+      const s = this.plannedShift(emp, d)?.workMin ?? 0;
+      contractMin += s;
+      if (d < today) contractSoFarMin += s;
+    }
+    return {
+      style: emp.workStyle,
+      start: comp.per.start,
+      end: comp.per.end,
+      frameMin: comp.result.frameMin,
+      workMin: comp.result.ordinaryMin,
+      contractMin,
+      contractSoFarMin,
+      overtimeMin: comp.result.days.reduce((s, d) => s + d.overtimeMin, 0),
+      remainingDays: comp.dates.filter((d) => d >= today).length,
+    };
+  }
+
+  /**
+   * 変形労働時間制・フレックスタイム制の月末見込。これまでの実績が所定の何倍だったか（ペース）を、これからの所定労働時間に掛けて、
+   * 残りの日が同じペースで働かれたものとして期間を計算し直し、その月の時間外を求める。
+   */
+  private projectedOvertime(emp: Employee, ym: string): number {
+    const comp = this.periodComputed(emp, this.periodOf(emp, ym));
+    const today = this.cal.today;
+    let sched = 0;
+    let actual = 0;
+    let workedDays = 0;
+    for (const d of comp.dates) {
+      if (d >= today) break;
+      const day = comp.byDate.get(d)!;
+      if (day.workMin - day.legalHolidayMin > 0) workedDays++;
+      actual += day.workMin - day.legalHolidayMin;
+      sched += this.plannedShift(emp, d)?.workMin ?? 0;
+    }
+    const ratio = workedDays >= 3 && sched > 0 ? Math.min(1.6, Math.max(0.7, actual / sched)) : 1;
+    const inputs = comp.dates.map((d) => {
+      const base = this.periodInput(emp, d);
+      if (d < today) return base;
+      const plan = this.plannedShift(emp, d);
+      if (!plan) return base;
+      const len = Math.round(plan.workMin * ratio);
+      return { ...base, work: { start: plan.start, end: plan.start + len + plan.breakMin }, breaks: plan.breakMin ? [{ start: plan.start + 240, end: plan.start + 240 + plan.breakMin }] : undefined };
+    });
+    const r = this.computePeriod(emp, inputs);
+    return comp.dates.reduce((s, d, i) => (d.startsWith(ym) ? s + r.days[i]!.overtimeMin : s), 0);
   }
 
   /** 日別明細: plans と、出勤日の集計結果を突き合わせる */
@@ -210,6 +417,10 @@ export class Ledger {
     const m = this.monthOf(emp, ym).result;
     if (ym !== this.cal.today.slice(0, 7)) {
       return { mtdOvertime: m.overtimeMin, projOvertime: m.overtimeMin, holiday: m.legalHolidayMin };
+    }
+    if (emp.workStyle !== "fixed") {
+      // 変形労働時間制・フレックスタイム制: 日・週・期間の判定を残りの予定まで含めて計算し直す
+      return { mtdOvertime: m.overtimeMin, projOvertime: Math.max(m.overtimeMin, this.projectedOvertime(emp, ym)), holiday: m.legalHolidayMin };
     }
     const { elapsed, total } = this.scheduledDays(emp, ym);
     const prior = fyMonths
@@ -235,7 +446,8 @@ export class Ledger {
       const r = this.monthOf(emp, x).result;
       return { month: x, overtimeMin: r.overtimeMin, legalHolidayMin: r.legalHolidayMin };
     });
-    const alerts = check36(history, { hasSpecialClause: this.opts.specialClause });
+    // 対象期間が3か月を超える1年単位の変形労働時間制は、限度時間が月42時間・年320時間になる
+    const alerts = check36(history, { hasSpecialClause: this.opts.specialClause, limits: emp.workStyle === "yearly" ? LIMITS_YEARLY_VARIABLE : LIMITS_STANDARD });
     const level: RiskLevel = alerts.some((a) => a.level === "violation") ? "violation" : alerts.length ? "warning" : "ok";
     const risk: Risk = {
       level,
@@ -267,6 +479,7 @@ export class Ledger {
     const off = shift.offset;
     const n = nowMin + off;
     const d = deriveDay(this.eventsOf(emp.id, shift.date));
+    const planned = this.plannedShift(emp, shift.date);
     const leave = shift.date === date ? this.leaveDaysOn(emp.id, date) : 0;
     const shiftBars = (bars: Bar[]): Bar[] => (off ? bars.map((b) => ({ ...b, from: b.from - off, to: b.to - off })) : bars);
 
@@ -280,8 +493,9 @@ export class Ledger {
         bars = barsFor(d.in, d.out!, breaks, d.out! + 1);
       } else {
         // 退勤前は所定終了時刻までの予定も帯で示す（休憩未取得なら所定の休憩も差し引く）。半休は所定時間が半分になる
-        const sched = emp.baseMin * (leave > 0 && leave < 1 ? 1 - leave : 1);
-        const len = plannedBreakLen(sched);
+        const half = leave > 0 && leave < 1;
+        const sched = (planned?.workMin ?? emp.baseMin) * (half ? 1 - leave : 1);
+        const len = planned && !half ? planned.breakMin : plannedBreakLen(sched);
         const planBreaks = [...breaks];
         const bStart = Math.max(720, d.in + 240);
         if (len && breaks.length === 0 && n < bStart + len) planBreaks.push({ start: bStart, end: bStart + len });
@@ -302,9 +516,10 @@ export class Ledger {
     if (leave > 0) return { emp: who, status: "leave", note: leave < 1 ? "半休" : "有給休暇", bars: [], workedMin: 0 };
     const hol = this.cal.holidays[date];
     if (!this.isScheduled(emp, date) || date < emp.hired) {
-      return { emp: who, status: "off", note: hol ?? (dowOf(date) === this.legalDow ? "法定休日" : "所定休日"), bars: [], workedMin: 0 };
+      return { emp: who, status: "off", note: hol ?? (this.isLegalHoliday(emp, date) ? "法定休日" : "所定休日"), bars: [], workedMin: 0 };
     }
-    return { emp: who, status: nowMin > emp.schedStart + SCHED_GRACE_MIN ? "missing" : "before", bars: [], workedMin: 0 };
+    const start = this.plannedShift(emp, date)?.start ?? emp.schedStart;
+    return { emp: who, status: nowMin > start + SCHED_GRACE_MIN ? "missing" : "before", bars: [], workedMin: 0 };
   }
 
   /** 進行中の勤務の集計（打刻途中でも現在時刻までで計算。日またぎなら始業日の勤務として計算） */
@@ -319,8 +534,8 @@ export class Ledger {
       date: shift.date,
       work: { start: d.in, end },
       breaks,
-      isLegalHoliday: dowOf(shift.date) === this.legalDow,
-      nextIsLegalHoliday: dowOf(addDays(shift.date, 1)) === this.legalDow,
+      isLegalHoliday: this.isLegalHoliday(emp, shift.date),
+      nextIsLegalHoliday: this.isLegalHoliday(emp, addDays(shift.date, 1)),
     });
   }
 

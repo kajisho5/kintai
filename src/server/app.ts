@@ -13,6 +13,7 @@ import type { Mailer } from "./mail";
 import { adminRoutes } from "./routes/admin";
 import { billingRoutes, webhookRoutes } from "./routes/billing";
 import { accountRoutes, publicRoutes, type Deps } from "./routes/auth";
+import { scheduleRoutes } from "./routes/schedule";
 import { workRoutes } from "./routes/work";
 
 export type { AppConfig } from "./context";
@@ -58,7 +59,9 @@ export function createApp(deps: AppDeps): Hono<Env> {
   const small = limit(64 * 1024);
   const medium = limit(1024 * 1024);
   const large = limit(3 * 1024 * 1024);
-  app.use("/api/*", (c, next) => (c.req.path === "/api/employees/import" ? large : c.req.path === "/api/billing/webhook" ? medium : small)(c, next));
+  app.use("/api/*", (c, next) =>
+    (["/api/employees/import", "/api/schedules/import"].includes(c.req.path) ? large : c.req.path === "/api/billing/webhook" || c.req.path === "/api/schedules" ? medium : small)(c, next),
+  );
 
   // CSRF対策: 別オリジンからの更新系リクエストを拒否（CORSは無効のまま）
   app.use("/api/*", async (c, next) => {
@@ -125,6 +128,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
 
   app.route("/", accountRoutes(d));
   app.route("/", workRoutes());
+  app.route("/", scheduleRoutes());
   app.route("/", adminRoutes(d));
   app.route("/", billingRoutes(d));
   return app;

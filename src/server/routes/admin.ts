@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { HOLIDAYS_JP_LAST_YEAR } from "../../domain/holidays-jp";
-import { isDate, type EmployeeAdmin, type EmployeesResponse, type ImportResponse, type ImportRowError, type SettingsResponse } from "../../domain";
+import { isDate, WORK_STYLES, type WorkStyle, type EmployeeAdmin, type EmployeesResponse, type ImportResponse, type ImportRowError, type SettingsResponse } from "../../domain";
 import { hashPassword } from "../auth";
 import { activeCount, ApiError, parse, requireAdmin, type Env } from "../context";
 import { audit, tx, type Db } from "../db";
@@ -25,6 +25,7 @@ interface EmpRow {
   title: string;
   kind: "正社員" | "パート";
   role: "admin" | "employee";
+  work_style: WorkStyle;
   email: string | null;
   work_days: string;
   weekly_days: number;
@@ -45,6 +46,7 @@ const toAdminView = (r: EmpRow): EmployeeAdmin => ({
   title: r.title,
   kind: r.kind,
   role: r.role,
+  workStyle: r.work_style,
   email: r.email ?? undefined,
   workDays: JSON.parse(r.work_days) as number[],
   weeklyDays: r.weekly_days,
@@ -76,6 +78,7 @@ const fields = {
   title: z.string().trim().max(20, "役職は20文字以内で入力してください").default(""),
   kind: z.enum(["正社員", "パート"], "雇用区分は「正社員」か「パート」にしてください"),
   role: z.enum(["admin", "employee"]).default("employee"),
+  workStyle: z.enum(WORK_STYLES, "勤務区分が正しくありません").default("fixed"),
   email: z
     .string()
     .trim()
@@ -99,6 +102,7 @@ const patchSchema = z.object({
   title: z.string().trim().max(20).optional(),
   kind: fields.kind.optional(),
   role: z.enum(["admin", "employee"]).optional(),
+  workStyle: z.enum(WORK_STYLES, "勤務区分が正しくありません").optional(),
   email: fields.email,
   workDays: weekdays.optional(),
   baseMin: fields.baseMin.optional(),
@@ -122,16 +126,19 @@ function defaults(e: Pick<Created, "workDays" | "baseMin" | "weeklyDays" | "week
 function insertEmployee(db: Db, e: Created, passwordHash: string, mustChange: boolean): void {
   const { weeklyDays, weeklyHours } = defaults(e);
   db.prepare(
-    `INSERT INTO employees (id, name, dept, title, kind, role, work_days, weekly_days, weekly_hours, base_min, sched_start, hired, carry, password_hash, email, must_change_password)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(e.id, e.name, e.dept, e.title, e.kind, e.role, JSON.stringify(e.workDays), weeklyDays, weeklyHours, e.baseMin, e.schedStart, e.hired, e.carry, passwordHash, e.email || null, mustChange ? 1 : 0);
+    `INSERT INTO employees (id, name, dept, title, kind, role, work_style, work_days, weekly_days, weekly_hours, base_min, sched_start, hired, carry, password_hash, email, must_change_password)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(e.id, e.name, e.dept, e.title, e.kind, e.role, e.workStyle, JSON.stringify(e.workDays), weeklyDays, weeklyHours, e.baseMin, e.schedStart, e.hired, e.carry, passwordHash, e.email || null, mustChange ? 1 : 0);
 }
 
 const activeAdmins = (db: Db): number => (db.prepare("SELECT COUNT(*) AS n FROM employees WHERE active = 1 AND role = 'admin'").get() as { n: number }).n;
 
 // ---------------------------------------------------------------- CSV 取り込み
 
-export const CSV_HEADERS = ["社員ID", "氏名", "部署", "役職", "雇用区分", "権限", "メール", "入社日", "所定労働日", "所定労働時間", "始業時刻", "繰越有給"] as const;
+export const CSV_HEADERS = ["社員ID", "氏名", "部署", "役職", "雇用区分", "権限", "メール", "入社日", "所定労働日", "所定労働時間", "始業時刻", "繰越有給", "勤務区分"] as const;
+
+/** CSV の「勤務区分」の表記 */
+const STYLE_BY_LABEL: Record<string, WorkStyle> = { 通常: "fixed", "1か月変形": "monthly", "1年変形": "yearly", "1週間変形": "weekly", フレックス: "flex" };
 const REQUIRED = ["社員ID", "氏名", "部署", "入社日"] as const;
 const MAX_IMPORT_ROWS = 500;
 
@@ -187,6 +194,8 @@ export function parseEmployeeCsv(text: string, existingIds: Set<string>): { rows
     const roleRaw = get("権限");
     if (roleRaw && !["管理者", "一般"].includes(roleRaw)) return fail(`権限「${roleRaw}」は「管理者」か「一般」にしてください`);
     const carryRaw = get("繰越有給");
+    const styleRaw = get("勤務区分");
+    if (styleRaw && !(styleRaw in STYLE_BY_LABEL)) return fail(`勤務区分「${styleRaw}」は「${Object.keys(STYLE_BY_LABEL).join("・")}」のいずれかにしてください`);
 
     const r = createSchema.omit({ password: true }).safeParse({
       id: get("社員ID"),
@@ -195,6 +204,7 @@ export function parseEmployeeCsv(text: string, existingIds: Set<string>): { rows
       title: get("役職"),
       kind: kindRaw,
       role: roleRaw === "管理者" ? "admin" : "employee",
+      workStyle: styleRaw ? STYLE_BY_LABEL[styleRaw] : "fixed",
       email: get("メール"),
       workDays: days,
       baseMin: Math.round(hours * 60),
@@ -287,6 +297,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     set("title", p.title);
     set("kind", p.kind);
     set("role", p.role);
+    set("work_style", p.workStyle);
     if (p.email !== undefined) set("email", p.email || null);
     if (p.workDays) set("work_days", JSON.stringify(p.workDays));
     set("base_min", p.baseMin);
@@ -401,6 +412,13 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
       company: { name: c.get("tenant").name, code: c.get("tenant").code },
       specialClause: s.specialClause,
       fyStartMonth: s.fyStartMonth,
+      legalHolidayDow: s.legalHolidayDow,
+      week44: s.week44,
+      flexMonths: s.flexMonths,
+      flexStartMonth: s.flexStartMonth,
+      yearlyStartMonth: s.yearlyStartMonth,
+      flexCoreStart: s.flexCoreStart ?? undefined,
+      flexCoreEnd: s.flexCoreEnd ?? undefined,
       holidays: db.prepare("SELECT date, name, kind FROM holidays WHERE date >= ? ORDER BY date").all(`${year - 1}-01-01`) as unknown as SettingsResponse["holidays"],
       holidaysStale: year > HOLIDAYS_JP_LAST_YEAR || (year === HOLIDAYS_JP_LAST_YEAR && month >= 10),
     };
@@ -415,12 +433,33 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     const admin = requireAdmin(c);
     const db = c.get("db");
     const p = parse(
-      z.object({ name: z.string().trim().min(1, "会社名を入力してください").max(60).optional(), specialClause: z.boolean().optional(), fyStartMonth: z.number().int().min(1).max(12).optional() }),
+      z.object({
+        name: z.string().trim().min(1, "会社名を入力してください").max(60).optional(),
+        specialClause: z.boolean().optional(),
+        fyStartMonth: z.number().int().min(1).max(12).optional(),
+        legalHolidayDow: z.number().int().min(0).max(6).optional(),
+        week44: z.boolean().optional(),
+        flexMonths: z.number().int().min(1, "清算期間は1〜3か月です").max(3, "清算期間は1〜3か月です").optional(),
+        flexStartMonth: z.number().int().min(1).max(12).optional(),
+        yearlyStartMonth: z.number().int().min(1).max(12).optional(),
+        /** コアタイム。両方を送る。null で「なし」にする */
+        flexCore: z.union([z.object({ start: z.number().int().min(0).max(1439), end: z.number().int().min(1).max(1440) }), z.null()]).optional(),
+      }),
       await c.req.json().catch(() => null),
     );
+    if (p.flexCore && p.flexCore.end <= p.flexCore.start) throw new ApiError(400, "コアタイムの終了は開始より後にしてください");
     const put = db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
     if (p.specialClause !== undefined) put.run("special_clause", p.specialClause ? "1" : "0");
     if (p.fyStartMonth !== undefined) put.run("fy_start_month", String(p.fyStartMonth));
+    if (p.legalHolidayDow !== undefined) put.run("legal_holiday_dow", String(p.legalHolidayDow));
+    if (p.week44 !== undefined) put.run("week44", p.week44 ? "1" : "0");
+    if (p.flexMonths !== undefined) put.run("flex_months", String(p.flexMonths));
+    if (p.flexStartMonth !== undefined) put.run("flex_start_month", String(p.flexStartMonth));
+    if (p.yearlyStartMonth !== undefined) put.run("yearly_start_month", String(p.yearlyStartMonth));
+    if (p.flexCore !== undefined) {
+      put.run("flex_core_start", p.flexCore ? String(p.flexCore.start) : "");
+      put.run("flex_core_end", p.flexCore ? String(p.flexCore.end) : "");
+    }
     if (p.name !== undefined) manager.update(c.get("tenant").id, { name: p.name });
     audit(db, c.get("clock").now().ts, admin.id, "settings_update", p);
     return c.json({ ...settingsView(c), company: { name: p.name ?? c.get("tenant").name, code: c.get("tenant").code } });

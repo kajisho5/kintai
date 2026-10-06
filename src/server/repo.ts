@@ -1,4 +1,4 @@
-import { Ledger, addDays, fiscalStartYm, monthsBetween, type Employee, type LeaveRow, type PunchEvent } from "../domain";
+import { Ledger, addDays, fiscalStartYm, flexPeriod, monthsBetween, yearlyPeriod, type Employee, type LeaveRow, type PunchEvent, type ScheduleRow, type WorkStyle } from "../domain";
 import type { Clock } from "./clock";
 import type { Db } from "./db";
 
@@ -9,6 +9,7 @@ interface EmpRow {
   title: string;
   kind: "正社員" | "パート";
   role: "admin" | "employee";
+  work_style: WorkStyle;
   work_days: string;
   weekly_days: number;
   weekly_hours: number;
@@ -28,6 +29,7 @@ const toEmployee = (r: EmpRow): Employee => ({
   title: r.title,
   kind: r.kind,
   role: r.role,
+  workStyle: r.work_style,
   workDays: JSON.parse(r.work_days) as number[],
   weeklyDays: r.weekly_days,
   weeklyHours: r.weekly_hours,
@@ -60,11 +62,40 @@ export interface CompanySettings {
   specialClause: boolean;
   /** 36協定の協定期間の起算月（1〜12） */
   fyStartMonth: number;
+  /** 法定休日の曜日（0=日曜〜6=土曜） */
+  legalHolidayDow: number;
+  /** 週の法定労働時間が44時間（特例措置対象事業場）か */
+  week44: boolean;
+  /** フレックスタイム制の清算期間（月数 1〜3）と、その区切りの起点月 */
+  flexMonths: number;
+  flexStartMonth: number;
+  /** 1年単位の変形期間の起点月 */
+  yearlyStartMonth: number;
+  /** フレックスタイム制のコアタイム（0:00 からの分）。なければ null */
+  flexCoreStart: number | null;
+  flexCoreEnd: number | null;
 }
 
+const intIn = (v: string, lo: number, hi: number, fallback: number): number => {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= lo && n <= hi ? n : fallback;
+};
+
 export function loadSettings(db: Db): CompanySettings {
-  const m = Number(getSetting(db, "fy_start_month", "4"));
-  return { specialClause: getSetting(db, "special_clause", "1") === "1", fyStartMonth: m >= 1 && m <= 12 ? m : 4 };
+  const coreS = getSetting(db, "flex_core_start", "");
+  const coreE = getSetting(db, "flex_core_end", "");
+  const core = coreS !== "" && coreE !== "" && Number(coreE) > Number(coreS);
+  return {
+    specialClause: getSetting(db, "special_clause", "1") === "1",
+    fyStartMonth: intIn(getSetting(db, "fy_start_month", "4"), 1, 12, 4),
+    legalHolidayDow: intIn(getSetting(db, "legal_holiday_dow", "0"), 0, 6, 0),
+    week44: getSetting(db, "week44", "0") === "1",
+    flexMonths: intIn(getSetting(db, "flex_months", "1"), 1, 3, 1),
+    flexStartMonth: intIn(getSetting(db, "flex_start_month", "4"), 1, 12, 4),
+    yearlyStartMonth: intIn(getSetting(db, "yearly_start_month", "4"), 1, 12, 4),
+    flexCoreStart: core ? Number(coreS) : null,
+    flexCoreEnd: core ? Number(coreE) : null,
+  };
 }
 
 export interface Snapshot {
@@ -85,8 +116,9 @@ export function snapshot(db: Db, clock: Clock): Snapshot {
   const now = clock.now();
   const settings = loadSettings(db);
   const fyStart = fiscalStartYm(now.date, settings.fyStartMonth);
-  // 協定期間の初日に日またぎで終わる勤務のため、前日から読む
-  const from = addDays(`${fyStart}-01`, -1);
+  // 協定期間の初日に日またぎで終わる勤務のため、前日から読む。1年単位の変形期間・フレックスの清算期間が協定期間より前から始まる場合は、そこから読む
+  const earliest = [`${fyStart}-01`, yearlyPeriod(now.date, settings.yearlyStartMonth).start, flexPeriod(now.date, settings.flexStartMonth, settings.flexMonths).start].sort()[0]!;
+  const from = addDays(earliest, -1);
   const events = (
     db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE date >= ? ORDER BY seq").all(from) as unknown as PunchEvent[]
   ).map((e) => ({ ...e }));
@@ -94,9 +126,19 @@ export function snapshot(db: Db, clock: Clock): Snapshot {
   const holidays = Object.fromEntries(
     (db.prepare("SELECT date, name FROM holidays").all() as unknown as { date: string; name: string }[]).map((h) => [h.date, h.name]),
   );
+  const schedules = (
+    db.prepare("SELECT emp_id AS empId, date, kind, start, end, break_min AS breakMin FROM schedules WHERE date >= ?").all(from) as unknown as (Omit<ScheduleRow, "start" | "end"> & { start: number | null; end: number | null })[]
+  ).map((r) => ({ ...r, start: r.start ?? undefined, end: r.end ?? undefined }));
   const ledger = new Ledger({ today: now.date, nowMin: now.min, holidays }, events, leaves.map((l) => ({ ...l })), {
     specialClause: settings.specialClause,
     fiscalStartMonth: settings.fyStartMonth,
+    legalHolidayDow: settings.legalHolidayDow,
+    weeklyLegalMin: settings.week44 ? 44 * 60 : 40 * 60,
+    flexMonths: settings.flexMonths,
+    flexStartMonth: settings.flexStartMonth,
+    yearlyStartMonth: settings.yearlyStartMonth,
+    flexCore: settings.flexCoreStart !== null ? { start: settings.flexCoreStart, end: settings.flexCoreEnd! } : undefined,
+    schedules,
   });
   const fyMonths = monthsBetween(fyStart, now.date.slice(0, 7));
   return { ledger, dateOf: clock.dateOf, settings, employees: loadEmployees(db), allEmployees: loadEmployees(db, true), fyMonths, nowMin: now.min, today: now.date };

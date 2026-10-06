@@ -46,3 +46,34 @@ export const diffDays = (a: string, b: string): number => Math.round((utc(b).get
 
 export const isYm = (s: string): boolean => /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
 export const isDate = (s: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(utc(s).getTime()) && utc(s).toISOString().slice(0, 10) === s;
+
+export const lastDateOfMonth = (ym: string): string => datesOfMonth(ym)[datesOfMonth(ym).length - 1]!;
+
+/** from〜to（両端を含む）の日付の一覧 */
+export function datesBetween(from: string, to: string): string[] {
+  const out: string[] = [];
+  for (let d = from; d <= to; d = addDays(d, 1)) out.push(d);
+  return out;
+}
+
+export function addYm(ym: string, n: number): string {
+  const [y, m] = ym.split("-").map(Number) as [number, number];
+  const i = y * 12 + (m - 1) + n;
+  return `${Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, "0")}`;
+}
+
+/** 1年単位の変形期間（startMonth の1日から12か月）のうち、date を含むもの */
+export function yearlyPeriod(date: string, startMonth: number): { start: string; end: string } {
+  const [y, m] = date.split("-").map(Number) as [number, number];
+  const start = `${m >= startMonth ? y : y - 1}-${String(startMonth).padStart(2, "0")}-01`;
+  return { start, end: addDays(addMonths(start, 12), -1) };
+}
+
+/** フレックスタイム制の清算期間（startMonth の1日から months か月ずつ区切る）のうち、date を含むもの */
+export function flexPeriod(date: string, startMonth: number, months: number): { start: string; end: string } {
+  const ym = date.slice(0, 7);
+  const m = Number(ym.slice(5, 7));
+  const back = (((m - startMonth) % 12) + 12) % 12 % months;
+  const startYm = addYm(ym, -back);
+  return { start: `${startYm}-01`, end: lastDateOfMonth(addYm(startYm, months - 1)) };
+}

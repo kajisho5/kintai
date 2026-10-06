@@ -97,7 +97,7 @@ export function weekStart(date: string, weekStartsOn: 0 | 1 = 1): string {
  * 週は渡された days の範囲でのみ集計するため、月初・月末の週をまたぐ場合は
  * 呼び出し側で前後の日も含めて渡し、対象月だけ後で絞ること。
  */
-export function calcMonth(inputs: DayInput[], weekStartsOn: 0 | 1 = 1): MonthResult {
+export function calcMonth(inputs: DayInput[], weekStartsOn: 0 | 1 = 1, weeklyLegalMin: Minutes = LEGAL_WEEKLY_MIN): MonthResult {
   const days = inputs.map(calcDay);
 
   const weeks = new Map<string, { work: Minutes; dailyOt: Minutes }>();
@@ -110,7 +110,7 @@ export function calcMonth(inputs: DayInput[], weekStartsOn: 0 | 1 = 1): MonthRes
   }
   let weeklyOvertimeMin = 0;
   for (const w of weeks.values()) {
-    weeklyOvertimeMin += Math.max(0, w.work - w.dailyOt - LEGAL_WEEKLY_MIN);
+    weeklyOvertimeMin += Math.max(0, w.work - w.dailyOt - weeklyLegalMin);
   }
 
   const sum = (f: (d: DayResult) => Minutes) => days.reduce((s, d) => s + f(d), 0);
@@ -120,6 +120,7 @@ export function calcMonth(inputs: DayInput[], weekStartsOn: 0 | 1 = 1): MonthRes
     workMin: sum((d) => d.workMin),
     overtimeMin,
     weeklyOvertimeMin,
+    periodOvertimeMin: 0,
     legalHolidayMin: sum((d) => d.legalHolidayMin),
     nightMin: sum((d) => d.nightMin),
     overtimeOver60hMin: Math.max(0, overtimeMin - 60 * 60),
