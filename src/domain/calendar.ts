@@ -10,10 +10,10 @@ export function datesOfMonth(ym: string): string[] {
   return Array.from({ length: n }, (_, i) => `${ym}-${String(i + 1).padStart(2, "0")}`);
 }
 
-/** 協定期間（4/1 起算）の開始月 */
-export function fiscalStartYm(date: string): string {
+/** 36協定の協定期間の開始月。startMonth は協定の起算月（既定 4 = 4/1 起算） */
+export function fiscalStartYm(date: string, startMonth = 4): string {
   const [y, m] = date.split("-").map(Number) as [number, number];
-  return `${m >= 4 ? y : y - 1}-04`;
+  return `${m >= startMonth ? y : y - 1}-${String(startMonth).padStart(2, "0")}`;
 }
 
 export function monthsBetween(from: string, to: string): string[] {

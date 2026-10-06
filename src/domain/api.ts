@@ -10,12 +10,29 @@ export interface EmpBrief {
   kind: "正社員" | "パート";
 }
 
+export type AccessState = "trialing" | "trial_expired" | "active" | "past_due" | "canceled" | "suspended";
+
 export interface MeResponse {
   employee: EmpBrief & { role: Role };
   today: string;
   nowMin: number;
   /** 管理者のみ: 承認待ちの件数 */
   pending: number;
+  /** 管理者が発行した一時パスワードのまま。変更するまで他の操作はできない */
+  mustChangePassword: boolean;
+  tenant: {
+    code: string;
+    name: string;
+    state: AccessState;
+    /** false の間は閲覧のみ（トライアル終了・解約） */
+    writable: boolean;
+    trialDaysLeft?: number;
+    seatsUsed: number;
+    seatLimit: number;
+  };
+  settings: { fyStartMonth: number; specialClause: boolean };
+  /** 祝日データが古く、来年の祝日が未登録になりそう */
+  holidaysStale: boolean;
 }
 
 export interface MonthSummary {
@@ -107,3 +124,61 @@ export type NewRequest =
   | { kind: "残業申請" | "休日出勤"; date: string; start: number; end: number; reason: string }
   | { kind: "有給申請"; date: string; days: 1 | 0.5; reason: string }
   | { kind: "打刻修正"; date: string; in?: number; out?: number; reason: string };
+
+// ---------------------------------------------------------------- 社員管理・会社設定（管理者）
+
+export interface EmployeeAdmin {
+  id: string;
+  name: string;
+  dept: string;
+  title: string;
+  kind: "正社員" | "パート";
+  role: Role;
+  email?: string;
+  workDays: number[];
+  weeklyDays: number;
+  weeklyHours: number;
+  baseMin: number;
+  schedStart: number;
+  hired: string;
+  carry: number;
+  active: boolean;
+  leftOn?: string;
+  mustChangePassword: boolean;
+}
+
+export type EmployeeInput = Omit<EmployeeAdmin, "active" | "leftOn" | "mustChangePassword" | "weeklyDays" | "weeklyHours"> & {
+  weeklyDays?: number;
+  weeklyHours?: number;
+};
+
+export interface EmployeesResponse {
+  rows: EmployeeAdmin[];
+  seatsUsed: number;
+  seatLimit: number;
+}
+
+export interface ImportRowError {
+  /** CSV の行番号（見出し行が 1） */
+  row: number;
+  message: string;
+}
+
+export type ImportResponse =
+  | { ok: false; errors: ImportRowError[] }
+  | { ok: true; dryRun: true; count: number }
+  | { ok: true; dryRun: false; count: number; credentials: { id: string; name: string; tempPassword: string }[] };
+
+export interface HolidayRow {
+  date: string;
+  name: string;
+  kind: "national" | "company";
+}
+
+export interface SettingsResponse {
+  company: { name: string; code: string };
+  specialClause: boolean;
+  fyStartMonth: number;
+  holidays: HolidayRow[];
+  holidaysStale: boolean;
+}

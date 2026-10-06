@@ -1,34 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AttendanceDetailResponse, AttendanceListResponse, DashboardResponse, LeaveResponse, MeResponse, PunchStateResponse, RequestView } from "../domain";
-import { createApp } from "./app";
-import { fixedClock } from "./clock";
-import { openDb } from "./db";
-import { seedDemo } from "./seed";
-
-const PASSWORD = "test-password-1";
-const TODAY = "2026-10-06"; // 火曜
-
-function setup(opts: { nowMin: number; at: string }) {
-  const db = openDb(":memory:");
-  const clock = fixedClock(TODAY, opts.at);
-  seedDemo(db, { today: TODAY, nowMin: opts.nowMin, password: PASSWORD });
-  const app = createApp(db, clock, { secureCookie: false, sessionHours: 12 });
-
-  const call = async (method: string, path: string, opt: { cookie?: string; body?: unknown; headers?: Record<string, string> } = {}) => {
-    const headers: Record<string, string> = { ...(opt.headers ?? {}) };
-    if (opt.cookie) headers.cookie = opt.cookie;
-    if (opt.body !== undefined) headers["content-type"] = "application/json";
-    const res = await app.request(path, { method, headers, body: opt.body !== undefined ? JSON.stringify(opt.body) : undefined });
-    const text = await res.text();
-    return { status: res.status, json: text ? JSON.parse(text) : undefined, res };
-  };
-  const login = async (id: string, password = PASSWORD): Promise<string> => {
-    const r = await call("POST", "/api/auth/login", { body: { id, password } });
-    expect(r.status).toBe(200);
-    return r.res.headers.get("set-cookie")!.split(";")[0]!;
-  };
-  return { db, clock, call, login };
-}
+import { PASSWORD, setup, TODAY } from "./testkit";
 
 describe("認証", () => {
   const t = setup({ nowMin: 14 * 60 + 20, at: "14:20" });
@@ -39,7 +11,7 @@ describe("認証", () => {
   });
 
   it("ログイン成功で HttpOnly の Cookie が付き、自分の情報を取得できる", async () => {
-    const r = await t.call("POST", "/api/auth/login", { body: { id: "e01", password: PASSWORD } });
+    const r = await t.call("POST", "/api/auth/login", { body: { company: "demo", id: "e01", password: PASSWORD } });
     const cookie = r.res.headers.get("set-cookie")!;
     expect(cookie).toMatch(/HttpOnly/i);
     expect(cookie).toMatch(/SameSite=Lax/i);
@@ -61,21 +33,21 @@ describe("認証", () => {
   });
 
   it("誤ったパスワードと存在しない社員IDで同じメッセージを返す", async () => {
-    const a = await t.call("POST", "/api/auth/login", { body: { id: "e02", password: "wrong-password" } });
-    const b = await t.call("POST", "/api/auth/login", { body: { id: "nobody", password: "wrong-password" } });
+    const a = await t.call("POST", "/api/auth/login", { body: { company: "demo", id: "e02", password: "wrong-password" } });
+    const b = await t.call("POST", "/api/auth/login", { body: { company: "demo", id: "nobody", password: "wrong-password" } });
     expect(a.status).toBe(401);
     expect(b.status).toBe(401);
     expect(a.json.error).toBe(b.json.error);
   });
 
   it("5回続けて失敗するとロックされ、正しいパスワードでも入れない", async () => {
-    for (let i = 0; i < 5; i++) await t.call("POST", "/api/auth/login", { body: { id: "e09", password: "wrong-password" } });
-    const r = await t.call("POST", "/api/auth/login", { body: { id: "e09", password: PASSWORD } });
+    for (let i = 0; i < 5; i++) await t.call("POST", "/api/auth/login", { body: { company: "demo", id: "e09", password: "wrong-password" } });
+    const r = await t.call("POST", "/api/auth/login", { body: { company: "demo", id: "e09", password: PASSWORD } });
     expect(r.status).toBe(423);
   });
 
   it("別オリジンからの更新系リクエストは拒否する", async () => {
-    const r = await t.call("POST", "/api/auth/login", { body: { id: "e01", password: PASSWORD }, headers: { origin: "https://evil.example", host: "localhost" } });
+    const r = await t.call("POST", "/api/auth/login", { body: { company: "demo", id: "e01", password: PASSWORD }, headers: { origin: "https://evil.example", host: "localhost" } });
     expect(r.status).toBe(403);
   });
 });
@@ -92,8 +64,8 @@ describe("パスワード変更", () => {
     expect((await t.call("GET", "/api/me", { cookie: other })).status).toBe(401);
     expect((await t.call("GET", "/api/me", { cookie: a })).status).toBe(401);
     expect((await t.call("GET", "/api/me", { cookie: fresh })).status).toBe(200);
-    expect((await t.call("POST", "/api/auth/login", { body: { id: "e11", password: PASSWORD } })).status).toBe(401);
-    expect((await t.call("POST", "/api/auth/login", { body: { id: "e11", password: "new-password-99" } })).status).toBe(200);
+    expect((await t.call("POST", "/api/auth/login", { body: { company: "demo", id: "e11", password: PASSWORD } })).status).toBe(401);
+    expect((await t.call("POST", "/api/auth/login", { body: { company: "demo", id: "e11", password: "new-password-99" } })).status).toBe(200);
   });
 
   it("現在のパスワードが違う・短すぎる・同じ場合は拒否する", async () => {
@@ -280,13 +252,25 @@ describe("申請と承認", () => {
     expect(d.days.find((x) => x.plan.date === q.date)?.plan.end).toBe(1155);
   });
 
-  it("一般社員は承認できず、管理者も自分の申請は承認できない", async () => {
+  it("一般社員は承認できず、管理者が複数いる会社では自分の申請を承認できない", async () => {
+    t.db.exec("UPDATE employees SET role = 'admin' WHERE id = 'e02'"); // 管理者を2人にする
     const admin = await t.login("e16");
     const emp = await t.login("e03");
     const mine = await t.call("POST", "/api/requests", { cookie: admin, body: { kind: "有給申請", date: "2026-10-22", days: 1, reason: "私用" } });
     expect(mine.status).toBe(201);
     expect((await t.call("POST", `/api/requests/${mine.json.id}/decision`, { cookie: admin, body: { decision: "approved" } })).status).toBe(403);
     expect((await t.call("POST", `/api/requests/${mine.json.id}/decision`, { cookie: emp, body: { decision: "approved" } })).status).toBe(403);
+    // 別の管理者なら承認できる
+    const other = await t.login("e02");
+    expect((await t.call("POST", `/api/requests/${mine.json.id}/decision`, { cookie: other, body: { decision: "approved" } })).status).toBe(200);
+  });
+
+  it("管理者が1人だけの会社では自分の申請を処理でき、監査ログに残る", async () => {
+    const admin = await t.login("e16");
+    const mine = await t.call("POST", "/api/requests", { cookie: admin, body: { kind: "有給申請", date: "2026-10-22", days: 1, reason: "私用" } });
+    expect((await t.call("POST", `/api/requests/${mine.json.id}/decision`, { cookie: admin, body: { decision: "approved" } })).status).toBe(200);
+    const log = t.db.prepare("SELECT detail FROM audit_log WHERE action = 'request_approved' ORDER BY id DESC LIMIT 1").get() as { detail: string };
+    expect(JSON.parse(log.detail).selfApproved).toBe(true);
   });
 
   it("申請者は未処理の申請を取り下げられる（他人の申請は不可）", async () => {

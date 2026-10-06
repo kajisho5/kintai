@@ -20,6 +20,11 @@ export function verifyPassword(password: string, stored: string): boolean {
 // 存在しない社員IDでも同じ計算時間にして、IDの有無を推測されにくくする
 const DUMMY_HASH = hashPassword("dummy-password-for-timing");
 
+/** 存在しない企業ID・社員IDでも同じ時間をかけて、存在の有無を推測されにくくする */
+export function burnPasswordCheck(password: string): void {
+  verifyPassword(password, DUMMY_HASH);
+}
+
 export function checkCredentials(db: Db, id: string, password: string): { ok: true; id: string } | { ok: false } {
   const row = db.prepare("SELECT id, password_hash FROM employees WHERE id = ? AND active = 1").get(id) as { id: string; password_hash: string } | undefined;
   const ok = verifyPassword(password, row?.password_hash ?? DUMMY_HASH);

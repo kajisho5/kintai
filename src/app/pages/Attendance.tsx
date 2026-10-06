@@ -11,11 +11,11 @@ import { Empty, Figure, MonthPicker, Pill, RiskPill, Who } from "../ui/kit";
 const RISK_ORDER = { ok: 0, warning: 1, violation: 2 } as const;
 
 /** 勤怠は締め済みの前月から見る（前月が協定期間に無ければ当月） */
-export function defaultYm(today: string): string {
+export function defaultYm(today: string, fyStartMonth = 4): string {
   const [y, m] = today.split("-").map(Number) as [number, number];
   const prev = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
-  const fyStartYear = m >= 4 ? y : y - 1;
-  return prev >= `${fyStartYear}-04` ? prev : today.slice(0, 7);
+  const fyStartYear = m >= fyStartMonth ? y : y - 1;
+  return prev >= `${fyStartYear}-${String(fyStartMonth).padStart(2, "0")}` ? prev : today.slice(0, 7);
 }
 
 // ---------------------------------------------------------------- 一覧

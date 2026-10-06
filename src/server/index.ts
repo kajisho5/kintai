@@ -1,28 +1,30 @@
-import { chmodSync, existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { createApp } from "./app";
-import { realClock } from "./clock";
-import { openDb } from "./db";
+import { realClock, type Clock } from "./clock";
+import { TenantManager } from "./control";
 
-const dbFile = process.env.KINTAI_DB ?? "data/kintai.db";
-mkdirSync(dirname(dbFile), { recursive: true });
-const db = openDb(dbFile);
-try {
-  chmodSync(dbFile, 0o600); // パスワードのハッシュを含むため、所有者のみ読み書き可にする
-} catch {
-  /* 権限を変更できない環境（共有ボリューム等）では運用側で制限する */
-}
-const tz = process.env.KINTAI_TZ ?? "Asia/Tokyo";
-const secureCookie = process.env.KINTAI_SECURE_COOKIE === "1";
+// 製品名に依存しない環境変数名にしている（製品名は src/brand.ts で変更する）
+const dataDir = process.env.DATA_DIR ?? "data";
+const secureCookie = process.env.SECURE_COOKIE === "1";
+const trustProxy = process.env.TRUST_PROXY === "1";
 
 if (process.env.NODE_ENV === "production" && !secureCookie) {
-  console.warn("警告: 本番環境では HTTPS を前提に KINTAI_SECURE_COOKIE=1 を設定してください");
+  console.warn("警告: 本番環境では HTTPS を前提に SECURE_COOKIE=1 を設定してください");
 }
 
-const api = createApp(db, realClock(tz), { secureCookie, sessionHours: 12 });
+const manager = new TenantManager(join(dataDir, "control.db"), join(dataDir, "tenants"));
+const clocks = new Map<string, Clock>();
+const clockFor = (tz: string): Clock => {
+  let c = clocks.get(tz);
+  if (!c) clocks.set(tz, (c = realClock(tz)));
+  return c;
+};
+
+const api = createApp({ manager, clockFor, config: { secureCookie, sessionHours: 12, trustProxy } });
 const root = new Hono();
 root.route("/", api);
 
@@ -34,5 +36,12 @@ if (existsSync("dist/index.html")) {
 
 const port = Number(process.env.PORT ?? 8787);
 serve({ fetch: root.fetch, port, hostname: process.env.HOST ?? "127.0.0.1" }, (i) => {
-  console.log(`Kintai server: http://${i.address}:${i.port}  (DB: ${dbFile}, TZ: ${tz})`);
+  console.log(`server: http://${i.address}:${i.port}  (data: ${dataDir}, tenants: ${manager.list().length})`);
 });
+
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    manager.close();
+    process.exit(0);
+  });
+}

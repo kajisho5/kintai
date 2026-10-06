@@ -1,29 +1,44 @@
 import { useState } from "react";
-import { CalendarCheck, ClipboardCheck, Clock3, KeyRound, LayoutGrid, LogOut, Table2 } from "lucide-react";
+import { CalendarCheck, ClipboardCheck, Clock3, KeyRound, LayoutGrid, LogOut, Settings as SettingsIcon, Table2, Users } from "lucide-react";
+import { BRAND } from "../brand";
 import { SessionProvider, useSession } from "./session";
 import { useHashRoute } from "./ui/hooks";
 import { Avatar } from "./ui/kit";
+import { BrandMark } from "./ui/BrandMark";
 import { PasswordDialog } from "./ui/PasswordDialog";
 import { Approvals } from "./pages/Approvals";
 import { Attendance, AttendanceDetail, defaultYm } from "./pages/Attendance";
 import { Dashboard } from "./pages/Dashboard";
+import { Employees } from "./pages/Employees";
 import { Leave } from "./pages/Leave";
+import { Settings } from "./pages/Settings";
 import { Punch } from "./pages/Punch";
 
-function BrandMark() {
+/** 無料トライアル・閲覧のみ・支払い遅延などの状態を知らせる帯 */
+function TenantBanner() {
+  const { me, isAdmin } = useSession();
+  const t = me.tenant;
+  if (t.state === "active") return null;
+  const msg: Record<string, { tone: "info" | "warn" | "bad"; text: string }> = {
+    trialing: { tone: "info", text: `無料トライアル中です（あと${t.trialDaysLeft ?? 0}日・${t.seatLimit}名まで）。` },
+    trial_expired: { tone: "bad", text: "無料トライアルが終了しました。いまは閲覧のみで、打刻や申請はできません。" },
+    past_due: { tone: "warn", text: "お支払いを確認できていません。このままだとご利用を停止する場合があります。" },
+    canceled: { tone: "bad", text: "ご契約が終了しています。閲覧のみ可能です。" },
+    suspended: { tone: "bad", text: "アカウントが停止されています。" },
+  };
+  const m = msg[t.state];
+  if (!m) return null;
   return (
-    <svg className="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-      <rect width="32" height="32" rx="7" fill="#1d3a5c" />
-      <path d="M7 22 L14 12 L18 17 L25 8" stroke="#fff" strokeWidth="3" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="25" cy="8" r="2.4" fill="#0f8a94" stroke="#fff" strokeWidth="1.2" />
-    </svg>
+    <div className={`banner ${m.tone}`} role="status">
+      <span>{m.text}{!isAdmin && t.state !== "trialing" ? " 管理者にご連絡ください。" : ""}</span>
+    </div>
   );
 }
 
 function Shell() {
-  const { me, isAdmin, logout } = useSession();
+  const { me, isAdmin, logout, refresh } = useSession();
   const [route, go] = useHashRoute();
-  const [ym, setYm] = useState(() => defaultYm(me.today));
+  const [ym, setYm] = useState(() => defaultYm(me.today, me.settings.fyStartMonth));
   const [pwOpen, setPwOpen] = useState(false);
   const myId = me.employee.id;
 
@@ -34,6 +49,8 @@ function Shell() {
         { to: "attendance", label: "勤怠一覧", icon: Table2 },
         { to: "approvals", label: "申請・承認", icon: ClipboardCheck },
         { to: "leave", label: "有給管理", icon: CalendarCheck },
+        { to: "employees", label: "社員管理", icon: Users },
+        { to: "settings", label: "会社設定", icon: SettingsIcon },
       ]
     : [
         { to: "punch", label: "打刻", icon: Clock3 },
@@ -53,6 +70,8 @@ function Shell() {
       break;
     case "approvals": page = <Approvals />; break;
     case "leave": page = <Leave />; break;
+    case "employees": page = isAdmin ? <Employees /> : <Dashboard go={go} />; break;
+    case "settings": page = isAdmin ? <Settings /> : <Punch />; break;
     default: page = isAdmin ? <Dashboard go={go} /> : <Punch />;
   }
   const activeKey = section === "attendance" && !isAdmin ? `attendance/${myId}` : section;
@@ -63,8 +82,8 @@ function Shell() {
         <div className="brand">
           <BrandMark />
           <div>
-            <div className="brand-name">Kintai</div>
-            <div className="brand-co">勤怠管理</div>
+            <div className="brand-name">{BRAND.name}</div>
+            <div className="brand-co">{me.tenant.name}</div>
           </div>
         </div>
         <nav className="nav" aria-label="メイン">
@@ -87,13 +106,15 @@ function Shell() {
         </div>
       </aside>
       <main className="main">
+        <TenantBanner />
         <div className="mobile-logout">
           <button type="button" className="btn sm text" onClick={() => setPwOpen(true)}><KeyRound size={14} />パスワード変更</button>
           <button type="button" className="btn sm text" onClick={() => void logout()}><LogOut size={14} />ログアウト</button>
         </div>
-        {page}
+        {/* 一時パスワードのままでは API が使えないため、変更が済むまで本体は表示しない */}
+        {me.mustChangePassword ? null : page}
       </main>
-      <PasswordDialog open={pwOpen} onClose={() => setPwOpen(false)} />
+      <PasswordDialog open={pwOpen || me.mustChangePassword} required={me.mustChangePassword} onClose={() => setPwOpen(false)} onChanged={refresh} />
     </div>
   );
 }

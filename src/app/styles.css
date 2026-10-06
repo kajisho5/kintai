@@ -271,6 +271,7 @@ button {
 /* ---------------------------------------------------------------- controls */
 
 .btn {
+  white-space: nowrap;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1643,4 +1644,172 @@ dialog.dlg::backdrop {
   .mobile-logout {
     display: flex;
   }
+}
+
+/* ---------------------------------------------------------------- 社員管理・設定・登録 */
+
+dialog.dlg.wide {
+  width: min(720px, calc(100vw - 32px));
+}
+
+.dlg .form {
+  overflow-y: auto;
+  max-height: calc(100vh - 120px);
+}
+
+.check {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: flex-start;
+  gap: 10px !important;
+  font-weight: 400 !important;
+  color: var(--ink) !important;
+}
+
+.check input {
+  margin-top: 4px;
+  flex: none;
+}
+
+.check b {
+  display: block;
+  font-weight: 700;
+}
+
+.hint {
+  display: block;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-top: 3px;
+}
+
+.hint.ok {
+  color: var(--matsu);
+  font-weight: 700;
+}
+
+.hint.bad {
+  color: var(--beni);
+  font-weight: 700;
+}
+
+.signup {
+  width: min(460px, 100%);
+}
+
+.daypick {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.daypick button {
+  width: 40px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.daypick button[aria-pressed="true"] {
+  background: var(--ai);
+  border-color: var(--ai);
+  color: #fff;
+}
+
+.btn.danger {
+  background: var(--beni);
+  border-color: var(--beni);
+  color: #fff;
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: #a82234;
+}
+
+code.pw {
+  font-family: var(--font-num);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: var(--paper);
+  padding: 2px 8px;
+  border-radius: 3px;
+  user-select: all;
+}
+
+.settings-form {
+  max-width: 640px;
+}
+
+.holiday-add {
+  display: flex !important;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line-2);
+  padding-bottom: 16px !important;
+}
+
+.holiday-add label:nth-child(2) {
+  flex: 1;
+  min-width: 180px;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: -6px 0 18px;
+  padding: 10px 14px;
+  border-radius: var(--r);
+  font-weight: 700;
+  border: 1px solid;
+}
+
+.banner.info {
+  background: var(--asagi-soft);
+  border-color: #b9dfe2;
+  color: #0a5f66;
+}
+
+.banner.warn {
+  background: var(--yama-soft);
+  border-color: #efd994;
+  color: var(--yama-ink);
+}
+
+.banner.bad {
+  background: var(--beni-soft);
+  border-color: #f0b9c1;
+  color: #8d1a2b;
+}
+
+@media (max-width: 880px) {
+  .nav {
+    overflow-x: auto;
+  }
+
+  .nav a {
+    flex: 0 0 auto;
+    min-width: 74px;
+  }
+
+  .holiday-add {
+    flex-direction: column;
+    align-items: stretch !important;
+  }
+}
+
+.login-card a,
+.note a {
+  color: var(--ai);
+  font-weight: 700;
+}
+
+.login-card .brand {
+  margin-bottom: 4px;
 }

@@ -64,7 +64,7 @@ export class Ledger {
     readonly cal: Calendar,
     events: PunchEvent[],
     leaves: LeaveRow[],
-    private readonly opts: { specialClause: boolean },
+    private readonly opts: { specialClause: boolean; fiscalStartMonth?: number },
   ) {
     for (const e of events) {
       const k = `${e.empId}|${e.date}`;
@@ -98,6 +98,7 @@ export class Ledger {
   // ------------------------------------------------------------ 日
 
   planOf(emp: Employee, date: string): DayPlan {
+    if (emp.leftOn && date > emp.leftOn) return { date, kind: "off", breaks: [], note: "退職後" };
     const w = dowOf(date);
     const hol = this.cal.holidays[date];
     const leave = this.leaveDaysOn(emp.id, date);
@@ -130,7 +131,7 @@ export class Ledger {
     const hit = this.monthCache.get(key);
     if (hit) return hit;
     const plans = datesOfMonth(ym)
-      .filter((d) => d < this.cal.today && d >= emp.hired)
+      .filter((d) => d < this.cal.today && d >= emp.hired && (!emp.leftOn || d <= emp.leftOn))
       .map((d) => this.planOf(emp, d));
     const worked = plans.filter((p) => p.kind === "work");
     const input = (p: DayPlan): DayInput => ({
@@ -166,7 +167,7 @@ export class Ledger {
   }
 
   private scheduledDays(emp: Employee, ym: string): { elapsed: number; total: number } {
-    const all = datesOfMonth(ym).filter((d) => d >= emp.hired && this.isScheduled(emp, d));
+    const all = datesOfMonth(ym).filter((d) => d >= emp.hired && (!emp.leftOn || d <= emp.leftOn) && this.isScheduled(emp, d));
     return { elapsed: all.filter((d) => d < this.cal.today).length, total: all.length };
   }
 
@@ -192,7 +193,7 @@ export class Ledger {
     const key = `${emp.id}|${ym}`;
     const hit = this.riskCache.get(key);
     if (hit) return hit;
-    const months = monthsBetween(fiscalStartYm(`${ym}-01`), ym);
+    const months = monthsBetween(fiscalStartYm(`${ym}-01`, this.opts.fiscalStartMonth), ym);
     const outlook = this.outlookOf(emp, ym, months);
     const history: MonthlyTotals[] = months.map((x) => {
       if (x === ym) return { month: x, overtimeMin: outlook.projOvertime, legalHolidayMin: outlook.holiday };
@@ -214,7 +215,7 @@ export class Ledger {
 
   /** 月別の時間外（グラフ用）。当月は累計と見込を併記 */
   overtimeSeries(emp: Employee, upToYm: string): { ym: string; actual: number; proj: number }[] {
-    const months = monthsBetween(fiscalStartYm(`${upToYm}-01`), this.cal.today.slice(0, 7));
+    const months = monthsBetween(fiscalStartYm(`${upToYm}-01`, this.opts.fiscalStartMonth), this.cal.today.slice(0, 7));
     return months.map((ym) => {
       const o = this.outlookOf(emp, ym, months);
       return { ym, actual: o.mtdOvertime, proj: o.projOvertime };

@@ -3,15 +3,11 @@
  * 実在の人物・企業とは無関係です。本番データには使わないでください。
  */
 import { addDays, dowOf, fiscalStartYm, lastGrantDate, type Employee } from "../domain";
+import { HOLIDAYS_JP } from "../domain/holidays-jp";
 import { hashPassword } from "./auth";
 import { audit, tx, type Db } from "./db";
 
-export const HOLIDAYS_2026: Record<string, string> = {
-  "2026-01-01": "元日", "2026-01-12": "成人の日", "2026-02-11": "建国記念の日", "2026-02-23": "天皇誕生日", "2026-03-20": "春分の日",
-  "2026-04-29": "昭和の日", "2026-05-03": "憲法記念日", "2026-05-04": "みどりの日", "2026-05-05": "こどもの日", "2026-05-06": "振替休日",
-  "2026-07-20": "海の日", "2026-08-11": "山の日", "2026-09-21": "敬老の日", "2026-09-22": "国民の休日", "2026-09-23": "秋分の日",
-  "2026-10-12": "スポーツの日", "2026-11-03": "文化の日", "2026-11-23": "勤労感謝の日",
-};
+const HOLIDAY_SET = new Set(HOLIDAYS_JP.map(([d]) => d));
 
 interface SampleEmp extends Employee {
   otMin: number;
@@ -113,8 +109,6 @@ export function seedDemo(db: Db, opts: SeedOptions): void {
 
   tx(db, () => {
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('special_clause', '1')").run();
-    const hol = db.prepare("INSERT OR REPLACE INTO holidays (date, name) VALUES (?, ?)");
-    for (const [d, n] of Object.entries(HOLIDAYS_2026)) hol.run(d, n);
 
     const insEmp = db.prepare(
       `INSERT INTO employees (id, name, dept, title, kind, role, work_days, weekly_days, weekly_hours, base_min, sched_start, hired, carry, password_hash)
@@ -123,7 +117,7 @@ export function seedDemo(db: Db, opts: SeedOptions): void {
     const insEvent = db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, source, created_at) VALUES (?, ?, ?, ?, 'punch', ?)");
     const insLeave = db.prepare("INSERT OR IGNORE INTO paid_leave (emp_id, date, days) VALUES (?, ?, ?)");
 
-    const isHoliday = (d: string) => d in HOLIDAYS_2026;
+    const isHoliday = (d: string) => HOLIDAY_SET.has(d);
     const scheduled = (e: SampleEmp, d: string) => e.workDays.includes(dowOf(d)) && !isHoliday(d) && d >= e.hired;
 
     for (const e of SAMPLE_EMPLOYEES) {

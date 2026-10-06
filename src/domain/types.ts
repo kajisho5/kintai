@@ -20,6 +20,11 @@ export interface Employee {
   hired: string;
   /** 前年度からの繰越有給日数 */
   carry: number;
+  email?: string;
+  /** 退職日（この日まで在籍）。在職中は未設定 */
+  leftOn?: string;
+  /** 次回ログイン時にパスワード変更を求める（管理者が発行した一時パスワードのとき） */
+  mustChangePassword?: boolean;
 }
 
 export type PunchKind = "in" | "out" | "break_start" | "break_end";

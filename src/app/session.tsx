@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import type { MeResponse } from "../domain/api";
 import { api } from "./api";
 import { Login } from "./pages/Login";
+import { Signup } from "./pages/Signup";
 
 interface Base {
   me: MeResponse;
@@ -51,6 +52,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       .catch(() => setState({ status: "anon" }));
   }, []);
 
+  const [, setHash] = useState(0);
+  useEffect(() => {
+    const on = () => setHash((n) => n + 1);
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+
   useEffect(() => {
     load();
     const off = () => setState({ status: "anon" });
@@ -59,7 +67,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [load]);
 
   if (state.status === "loading") return <div className="splash" role="status" aria-label="読み込み中" />;
-  if (state.status === "anon") return <Login onLogin={load} />;
+  if (state.status === "anon") return window.location.hash === "#/signup" ? <Signup onDone={load} /> : <Login onLogin={load} />;
 
   const session: Session = {
     me: state.base.me,
