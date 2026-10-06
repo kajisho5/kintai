@@ -76,15 +76,15 @@ export class StripeBilling implements BillingGateway {
       tax_id_collection: { enabled: true },
       allow_promotion_codes: true,
       ...(this.cfg.automaticTax ? { automatic_tax: { enabled: true } } : {}),
-      success_url: `${this.cfg.appUrl}/#/billing?checkout=success`,
-      cancel_url: `${this.cfg.appUrl}/#/billing?checkout=cancel`,
+      success_url: `${this.cfg.appUrl}/app/#/billing?checkout=success`,
+      cancel_url: `${this.cfg.appUrl}/app/#/billing?checkout=cancel`,
     });
     if (!session.url) throw new ApiError(400, "決済ページを作成できませんでした。しばらくしてからお試しください");
     return { url: session.url };
   }
 
   async createPortal({ customerId }: { customerId: string }): Promise<{ url: string }> {
-    const s = await this.stripe.billingPortal.sessions.create({ customer: customerId, return_url: `${this.cfg.appUrl}/#/billing` });
+    const s = await this.stripe.billingPortal.sessions.create({ customer: customerId, return_url: `${this.cfg.appUrl}/app/#/billing` });
     return { url: s.url };
   }
 

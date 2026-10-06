@@ -68,7 +68,7 @@ export function Signup({ onDone }: { onDone: () => void }) {
         </label>
         <label className="check">
           <input type="checkbox" checked={f.acceptTerms} onChange={(e) => set("acceptTerms", e.target.checked)} required />
-          <span><a href="/terms.html" target="_blank" rel="noreferrer">利用規約</a>と<a href="/privacy.html" target="_blank" rel="noreferrer">プライバシーポリシー</a>に同意します</span>
+          <span><a href="/terms" target="_blank" rel="noreferrer">利用規約</a>と<a href="/privacy" target="_blank" rel="noreferrer">プライバシーポリシー</a>に同意します</span>
         </label>
         <div className="form-error" role="alert">{error}</div>
         <button className="btn primary" type="submit" disabled={busy || !f.acceptTerms || (codeMsg !== null && !codeMsg.ok)}>{busy ? "登録しています…" : "無料トライアルを始める"}</button>

@@ -151,7 +151,7 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
       throw e;
     }
     if (appUrl) {
-      const mail = templates.welcome({ adminName: b.adminName, companyName: b.companyName, code: tenant.code, loginUrl: appUrl, trialDays: PLAN.trialDays });
+      const mail = templates.welcome({ adminName: b.adminName, companyName: b.companyName, code: tenant.code, loginUrl: `${appUrl}/app/`, trialDays: PLAN.trialDays });
       void mailer.send({ to: b.email, ...mail }).catch((e) => console.error("ご登録メールを送れませんでした:", e instanceof Error ? e.message : e));
     }
     return c.json({ ok: true, code: tenant.code }, 201);
@@ -174,7 +174,7 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
       for (const e of emps) {
         const token = randomBytes(32).toString("base64url");
         db.prepare("INSERT INTO password_resets (token_hash, emp_id, expires_at) VALUES (?, ?, ?)").run(sha256(token), e.id, now + RESET_MINUTES * 60_000);
-        const link = `${appUrl}/#/reset?company=${encodeURIComponent(tenant.code)}&token=${token}`;
+        const link = `${appUrl}/app/#/reset?company=${encodeURIComponent(tenant.code)}&token=${token}`;
         void mailer.send({ to: b.email, ...templates.passwordReset({ link, minutes: RESET_MINUTES }) }).catch((err) => console.error("再設定メールを送れませんでした:", err instanceof Error ? err.message : err));
         audit(db, now, e.id, "password_reset_requested", { ip });
       }

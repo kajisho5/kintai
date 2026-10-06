@@ -37,7 +37,7 @@ export async function runJobs(d: JobDeps, opts: { fullSeatReconcile?: boolean } 
     if (t.status === "trialing" && t.trialReminderSentAt === undefined && t.trialEndsAt > now && t.trialEndsAt - now <= TRIAL_REMINDER_DAYS * DAY) {
       const admin = db.prepare("SELECT name FROM employees WHERE role = 'admin' AND active = 1 ORDER BY id LIMIT 1").get() as { name: string } | undefined;
       const daysLeft = Math.max(1, Math.ceil((t.trialEndsAt - now) / DAY));
-      const mail = templates.trialEnding({ adminName: admin?.name ?? "ご担当者", daysLeft, billingUrl: d.appUrl ? `${d.appUrl}/#/billing` : "（管理画面の「請求」から）" });
+      const mail = templates.trialEnding({ adminName: admin?.name ?? "ご担当者", daysLeft, billingUrl: d.appUrl ? `${d.appUrl}/app/#/billing` : "（管理画面の「請求」から）" });
       try {
         await d.mailer.send({ to: t.adminEmail, ...mail });
         d.manager.update(t.id, { trialReminderSentAt: now });

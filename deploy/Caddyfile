@@ -1,0 +1,5 @@
+# {$DOMAIN} へのアクセスを、アプリに中継する。HTTPS の証明書は自動で取得・更新される
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:8787
+}

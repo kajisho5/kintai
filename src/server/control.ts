@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -229,6 +229,28 @@ export class TenantManager {
       v.db.close();
       this.open.delete(id);
     }
+  }
+
+  /** テナント DB のファイルパス（メモリ上の場合は undefined） */
+  tenantFile(tenantId: string): string | undefined {
+    return this.tenantDir === ":memory:" ? undefined : join(this.tenantDir, `${tenantId}.db`);
+  }
+
+  /** 管理用DBの一貫したスナップショットを file に書き出す */
+  backupControl(file: string): void {
+    this.control.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
+  }
+
+  /** 会社のデータを完全に削除する（元に戻せない）。先にバックアップ・書き出しをしておくこと */
+  purge(tenantId: string): void {
+    const open = this.open.get(tenantId);
+    if (open) {
+      open.db.close();
+      this.open.delete(tenantId);
+    }
+    const f = this.tenantFile(tenantId);
+    if (f) for (const x of [f, `${f}-wal`, `${f}-shm`]) rmSync(x, { force: true });
+    this.delete(tenantId);
   }
 
   close(): void {

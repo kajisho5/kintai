@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>プライバシーポリシー | {{BRAND_NAME}}</title>
+    <meta name="robots" content="index,follow" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d3a5c'/%3E%3Cpath d='M7 22 L14 12 L18 17 L25 8' stroke='%23fff' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./site.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="wrap">
+        <a class="logo" href="/">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#1d3a5c"/><path d="M7 22 L14 12 L18 17 L25 8" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="25" cy="8" r="2.4" fill="#0f8a94" stroke="#fff" stroke-width="1.2"/></svg>
+          {{BRAND_NAME}}
+        </a>
+        <div class="actions">
+          <a class="btn" href="/app/">ログイン</a>
+          <a class="btn primary" href="/app/#/signup">無料で始める</a>
+        </div>
+      </div>
+    </header>
+    <main class="wrap">
+      <article class="prose">
+        <p class="draft">これは公開前に確認が必要な「ひな形」です。弁護士等の確認を受け、運営者の情報（{{OP_NAME}}など）と施行日を正式なものに置き換えてから公開してください。</p>
+        <h1>プライバシーポリシー</h1>
+        <p class="meta">施行日: （YYYY年M月D日）</p>
+        <p>{{OP_NAME}}（以下「当社」）は、「{{BRAND_NAME}}」（以下「本サービス」）における個人情報等の取扱いについて、次のとおり定めます。</p>
+
+        <h2>1. 当社の立場</h2>
+        <p>本サービスの契約者（会社等）が入力する社員等の個人情報（氏名、勤怠、申請、有給の情報等）について、契約者が個人情報取扱事業者として利用目的を定め、当社はその取扱いの委託を受けて、契約者の指示の範囲内で取り扱います。当社は、これを契約者データとして、契約者ごとに分離して保存します。</p>
+
+        <h2>2. 取得する情報</h2>
+        <ul>
+          <li>契約者の情報: 会社名、管理者の氏名・メールアドレス、お申し込み・お支払いに関する情報（カード番号は当社では保持せず、決済事業者が管理します）</li>
+          <li>社員等の情報: 氏名、社員ID、所属、メールアドレス（任意）、入社日・所定の勤務条件、出退勤・休憩の打刻、各種申請、有給の取得状況</li>
+          <li>利用に伴う情報: ログイン・操作の記録（監査ログ）、IPアドレス、ブラウザの種類 等</li>
+        </ul>
+
+        <h2>3. 利用目的</h2>
+        <ul>
+          <li>本サービスの提供（勤怠の記録・集計、申請の処理、ログイン認証 等）</li>
+          <li>パスワード再設定、重要なお知らせ、無料トライアルの終了のご案内などの連絡</li>
+          <li>料金の請求・決済</li>
+          <li>不正利用の防止、障害の調査、サービスの保守・改善</li>
+          <li>法令に基づく対応</li>
+        </ul>
+
+        <h2>4. 第三者への提供・委託</h2>
+        <p>当社は、法令に基づく場合を除き、契約者データを本人または契約者の同意なく第三者へ提供しません。本サービスの提供のため、次の事業者に取扱いを委託する場合があります。</p>
+        <ul>
+          <li>決済: Stripe, Inc.（契約者の支払い情報）</li>
+          <li>メール配信: （メール配信事業者名）</li>
+          <li>サーバー・ネットワーク: （ホスティング事業者名・所在国）</li>
+        </ul>
+        <p class="meta">（上記の事業者名は、実際に利用する事業者に置き換えてください。外国にある事業者に個人データの取扱いを委託する場合は、個人情報保護法の定めに従った記載が必要です。）</p>
+
+        <h2>5. Cookie・外部送信</h2>
+        <p>本サービスは、ログイン状態を保つために、必要最小限のCookie（セッション用）を使用します。広告・解析を目的としたCookieや外部のサービスへの情報の送信は行っていません。</p>
+
+        <h2>6. 安全管理措置</h2>
+        <ul>
+          <li>通信の暗号化（HTTPS）、パスワードのハッシュ化保存、権限による閲覧範囲の制限</li>
+          <li>契約者ごとにデータベースを分離</li>
+          <li>操作の記録（監査ログ）、定期的なバックアップ</li>
+        </ul>
+
+        <h2>7. 保存期間</h2>
+        <p>契約者データは、契約期間中保存し、契約終了後{{RETENTION_DAYS}}日で削除します（法令により保存が必要なものを除く）。バックアップからの削除には、最大で（　）日かかります。</p>
+
+        <h2>8. 開示・訂正・削除等の請求</h2>
+        <p>社員等ご本人からの開示・訂正・利用停止・削除等のご請求は、まずお勤め先の契約者にお申し出ください。当社が直接受け付けた場合は、契約者に連絡のうえ、対応します。</p>
+
+        <h2>9. お問い合わせ窓口</h2>
+        <p>{{OP_NAME}}　{{OP_EMAIL}}</p>
+
+        <h2>10. 改定</h2>
+        <p>本ポリシーは、必要に応じて改定します。重要な変更は、本サービス上または電子メールでお知らせします。</p>
+      </article>
+    </main>
+    <footer>
+      <div class="wrap">
+        <div>© {{BRAND_NAME}}　{{OP_NAME}}</div>
+        <nav aria-label="規約">
+          <a href="/terms">利用規約</a>
+          <a href="/privacy">プライバシーポリシー</a>
+          <a href="/tokushoho">特定商取引法に基づく表記</a>
+          <a href="mailto:{{OP_EMAIL}}">お問い合わせ</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

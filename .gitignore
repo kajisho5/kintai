@@ -4,3 +4,6 @@ data/
 *.db
 *.db-wal
 *.db-shm
+dist-server
+.env
+backups/

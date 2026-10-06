@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { createApp } from "./app";
 import { billingFromEnv } from "./billing";
 import { realClock, type Clock } from "./clock";
@@ -37,11 +37,38 @@ const api = createApp({ manager, clockFor, config: { secureCookie, sessionHours:
 const root = new Hono();
 root.route("/", api);
 
-// ビルド済みの画面があれば同じサーバーから配信する（SPA なので未知のパスは index.html）
+// 公開サイト（/）とアプリ（/app/）。ビルド済みなら同じサーバーから配信する
+const noCache: MiddlewareHandler = async (c, next) => {
+  await next();
+  c.res.headers.set("Cache-Control", "no-cache");
+};
+const immutable: MiddlewareHandler = async (c, next) => {
+  await next();
+  if (c.res.status === 200) c.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
+};
+
 if (existsSync("dist/index.html")) {
-  root.use("/*", serveStatic({ root: "./dist" }));
-  root.get("*", serveStatic({ path: "./dist/index.html" }));
+  const page = (route: string, file: string) => root.get(route, noCache, serveStatic({ path: `./dist/site/${file}` }));
+  page("/", "index.html");
+  for (const p of ["terms", "privacy", "tokushoho"]) {
+    page(`/${p}`, `${p}.html`);
+    page(`/${p}.html`, `${p}.html`);
+  }
+  const strip = (p: string) => p.replace(/^\/app/, "");
+  root.get("/app", (c) => c.redirect("/app/"));
+  // ファイル名にハッシュが付く資産は長期キャッシュ。アプリの HTML は常に最新を確認させる
+  root.use("/app/assets/*", immutable, serveStatic({ root: "./dist", rewriteRequestPath: strip }));
+  root.get("/app/*", noCache, serveStatic({ path: "./dist/index.html" }));
 }
+
+root.get("/robots.txt", (c) =>
+  c.text(["User-agent: *", "Allow: /", "Disallow: /app/", "Disallow: /api/", ...(appUrl ? [`Sitemap: ${appUrl}/sitemap.xml`] : [])].join("\n") + "\n"),
+);
+root.get("/sitemap.xml", (c) => {
+  if (!appUrl) return c.notFound();
+  const urls = ["/", "/terms", "/privacy", "/tokushoho"].map((p) => `  <url><loc>${appUrl}${p}</loc></url>`).join("\n");
+  return c.body(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`, 200, { "Content-Type": "application/xml; charset=utf-8" });
+});
 
 const port = Number(process.env.PORT ?? 8787);
 serve({ fetch: root.fetch, port, hostname: process.env.HOST ?? "127.0.0.1" }, (i) => {

@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Download, Plus, Trash2 } from "lucide-react";
 import { api, useApi } from "../api";
 import type { HolidayRow, SettingsResponse } from "../../domain/api";
 import { dowOf } from "../../domain/calendar";
@@ -23,6 +23,14 @@ export function Settings() {
       <div className="stack">
         <GeneralPanel s={data} onSaved={() => { reload(); refresh(); }} />
         <HolidayPanel holidays={data.holidays} stale={data.holidaysStale} today={me.today} onChanged={reload} />
+        <section className="panel" aria-labelledby="x-title">
+          <div className="panel-head"><h2 id="x-title">データの書き出し</h2></div>
+          <div className="panel-body" style={{ display: "grid", gap: 12 }}>
+            <p style={{ margin: 0 }}>社員・打刻・申請・有給・休日・操作記録を、すべてまとめてJSONファイルで書き出します（パスワード情報は含まれません）。契約が終了した後でも、閲覧のみの状態で書き出せます。</p>
+            <div><a className="btn" href="/api/export" download><Download size={16} />全データを書き出す（JSON）</a></div>
+            <p className="note" style={{ margin: 0 }}>月ごとの勤怠は、「勤怠一覧」のCSV出力をご利用ください。</p>
+          </div>
+        </section>
       </div>
     </>
   );

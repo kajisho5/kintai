@@ -14,4 +14,13 @@ export const BRAND = {
     email: "support@example.com",
     phone: "（電話番号）",
   },
+  /** 規約のひな形に差し込む運用上の数値。事業判断と法務確認のうえで確定すること */
+  policy: {
+    /** 料金改定などの事前通知日数 */
+    noticeDays: 30,
+    /** 契約終了後、データを削除するまでの日数 */
+    retentionDays: 30,
+    /** 損害賠償の上限の算定に使う、直近の支払い月数 */
+    liabilityMonths: 12,
+  },
 } as const;

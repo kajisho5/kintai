@@ -270,7 +270,7 @@ describe("定期ジョブ", () => {
     expect(t.mailer.sent).toHaveLength(1);
     expect(t.mailer.sent[0]!.to).toBe("admin@example.com");
     expect(t.mailer.sent[0]!.text).toContain("あと2日");
-    expect(t.mailer.sent[0]!.text).toContain("https://app.example.com/#/billing");
+    expect(t.mailer.sent[0]!.text).toContain("https://app.example.com/app/#/billing");
   });
 
   it("契約済み・期限切れの会社には送らない", async () => {

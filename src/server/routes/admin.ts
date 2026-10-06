@@ -7,6 +7,7 @@ import { hashPassword } from "../auth";
 import { activeCount, ApiError, parse, requireAdmin, type Env } from "../context";
 import { audit, tx, type Db } from "../db";
 import { parseCsv } from "../csv";
+import { exportCompany } from "../export";
 import { loadSettings } from "../repo";
 import { syncSeats } from "../seats";
 import type { Deps } from "./auth";
@@ -357,6 +358,19 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     audit(db, c.get("clock").now().ts, admin.id, "employee_import", { count: rows.length });
     seatsChanged(c);
     return c.json({ ok: true, dryRun: false, count: rows.length, credentials } satisfies ImportResponse);
+  });
+
+  // ---- データの書き出し（解約後・閲覧のみの状態でも使える） ----
+
+  app.get("/api/export", (c) => {
+    requireAdmin(c);
+    const now = c.get("clock").now();
+    const body = JSON.stringify(exportCompany(c.get("db"), c.get("tenant"), now.ts), null, 2);
+    audit(c.get("db"), now.ts, c.get("me").id, "export", {});
+    return c.body(body, 200, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Disposition": `attachment; filename="export-${c.get("tenant").code}-${now.date}.json"`,
+    });
   });
 
   // ---- 会社設定 ----

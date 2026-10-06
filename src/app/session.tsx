@@ -83,6 +83,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     refresh: load,
     logout: async () => {
       await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+      window.location.hash = "#/"; // 次にログインする人が、前の人が開いていた画面に着地しないようにする
       setState({ status: "anon" });
     },
   };

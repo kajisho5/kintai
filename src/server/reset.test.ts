@@ -18,7 +18,7 @@ describe("パスワードの再設定", () => {
     expect(t.mailer.sent).toHaveLength(1);
     const mail = t.mailer.sent[0]!;
     expect(mail.to).toBe("e01@example.com");
-    expect(mail.text).toContain("https://app.example.com/#/reset?company=demo&token=");
+    expect(mail.text).toContain("https://app.example.com/app/#/reset?company=demo&token=");
     expect(mail.text).not.toContain(PASSWORD);
 
     const r = await t.call("POST", "/api/auth/reset", { body: { company: "demo", token: tokenOf(mail), password: "brand-new-pass-1" } });
