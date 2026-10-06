@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { CalendarCheck, ClipboardCheck, Clock3, KeyRound, CreditCard, LayoutGrid, LogOut, Settings as SettingsIcon, Table2, Users } from "lucide-react";
+import { CalendarCheck, CalendarRange, ClipboardCheck, Clock3, KeyRound, CreditCard, LayoutGrid, LogOut, Settings as SettingsIcon, Table2, Users } from "lucide-react";
 import { BRAND } from "../brand";
 import { SessionProvider, useSession } from "./session";
 import { useHashRoute } from "./ui/hooks";
@@ -15,6 +15,7 @@ import { Employees } from "./pages/Employees";
 import { Leave } from "./pages/Leave";
 import { Settings } from "./pages/Settings";
 import { Punch } from "./pages/Punch";
+import { Schedule } from "./pages/Schedule";
 
 /** 無料トライアル・閲覧のみ・支払い遅延などの状態を知らせる帯 */
 function TenantBanner() {
@@ -96,6 +97,7 @@ function Shell() {
         { to: "dashboard", label: "ダッシュボード", icon: LayoutGrid },
         { to: "punch", label: "打刻", icon: Clock3 },
         { to: "attendance", label: "勤怠一覧", icon: Table2 },
+        { to: "schedule", label: "シフト", icon: CalendarRange },
         { to: "approvals", label: "申請・承認", icon: ClipboardCheck },
         { to: "leave", label: "有給管理", icon: CalendarCheck },
         { to: "employees", label: "社員管理", icon: Users },
@@ -105,6 +107,7 @@ function Shell() {
     : [
         { to: "punch", label: "打刻", icon: Clock3 },
         { to: `attendance/${myId}`, label: "自分の勤怠", icon: Table2 },
+        { to: "schedule", label: "シフト", icon: CalendarRange },
         { to: "approvals", label: "申請", icon: ClipboardCheck },
         { to: "leave", label: "有給", icon: CalendarCheck },
       ];
@@ -118,6 +121,7 @@ function Shell() {
       page = !isAdmin ? <AttendanceDetail id={myId} go={go} ym={ym} setYm={setYm} />
         : param ? <AttendanceDetail id={param} go={go} ym={ym} setYm={setYm} /> : <Attendance go={go} ym={ym} setYm={setYm} />;
       break;
+    case "schedule": page = <Schedule />; break;
     case "approvals": page = <Approvals />; break;
     case "leave": page = <Leave />; break;
     case "employees": page = isAdmin ? <Employees /> : <Dashboard go={go} />; break;

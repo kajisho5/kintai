@@ -3,10 +3,10 @@ import { ArrowDown, ArrowUp, ChevronLeft, Download, Search } from "lucide-react"
 import { useApi } from "../api";
 import type { AttendanceDetailResponse, AttendanceListResponse, AttendanceRow } from "../../domain/api";
 import { datesOfMonth, dowOf } from "../../domain/calendar";
-import type { DayPlan } from "../../domain/types";
+import { WORK_STYLE_LABEL, type DayPlan } from "../../domain/types";
 import { WD, clock, csvDownload, dur, durOrDash, hours1, shortDate, ymLabel } from "../format";
 import { useSession } from "../session";
-import { Empty, Figure, MonthPicker, Pill, RiskPill, Who } from "../ui/kit";
+import { Empty, Figure, Gauge, MonthPicker, Pill, RiskPill, Who } from "../ui/kit";
 
 const RISK_ORDER = { ok: 0, warning: 1, violation: 2 } as const;
 
@@ -166,16 +166,20 @@ function dayLabel(p: DayPlan | undefined, date: string): { text: string; tone: "
 }
 
 export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: string) => void; ym: string; setYm: (v: string) => void }) {
-  const { isAdmin } = useSession();
+  const { isAdmin, me } = useSession();
   const { data, error, loading } = useApi<AttendanceDetailResponse>(`/api/attendance/${encodeURIComponent(id)}?ym=${ym}`);
   if (!data) return <p className={error ? "status-error" : ""} role="status">{error ?? "読み込んでいます…"}</p>;
 
-  const { emp, month: m, risk, today } = data;
+  const { emp, month: m, risk, today, period } = data;
   const byDate = new Map(data.days.map((d) => [d.plan.date, d]));
+  const variable = emp.workStyle !== "fixed";
+  // 対象期間が3か月を超える1年単位の変形労働時間制は、36協定の限度が月42時間・年320時間
+  const monthLimit = emp.workStyle === "yearly" ? 42 : 45;
+  const yearLimit = emp.workStyle === "yearly" ? 320 : 360;
 
   const exportCsv = () =>
     csvDownload(`勤怠明細_${emp.name.replace(/\s/g, "")}_${ym}.csv`, [
-      ["日付", "区分", "出勤", "退勤", "休憩(分)", "実働(分)", "法定内(分)", "日単位時間外(分)", "深夜(分)", "法定休日(分)"],
+      ["日付", "区分", "出勤", "退勤", "休憩(分)", "実働(分)", "法定内(分)", variable ? "時間外(分)" : "日単位時間外(分)", "深夜(分)", "法定休日(分)"],
       ...data.days.map(({ plan: p, result: r }) => [
         p.date, dayLabel(p, p.date).text, p.start !== undefined ? clock(p.start) : "", p.end !== undefined && p.kind === "work" ? clock(p.end) : "",
         p.breaks.reduce((s, b) => s + b.end - b.start, 0) || "", r?.workMin ?? "", r?.legalInMin ?? "", r?.dailyOvertimeMin ?? "", r?.nightMin ?? "", r?.legalHolidayMin ?? "",
@@ -194,7 +198,10 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
           <span className="avatar" style={{ width: 44, height: 44, fontSize: 18 }} aria-hidden="true">{emp.name.charAt(0)}</span>
           <div>
             <h1>{emp.name}</h1>
-            <p>{emp.dept}{emp.title ? `・${emp.title}` : ""}・{emp.kind}（週{emp.weeklyDays}日／{emp.weeklyHours}時間）</p>
+            <p>
+              {emp.dept}{emp.title ? `・${emp.title}` : ""}・{emp.kind}（週{emp.weeklyDays}日／{emp.weeklyHours}時間）
+              {variable ? <span style={{ marginLeft: 8 }}><Pill tone="live" plain>{WORK_STYLE_LABEL[emp.workStyle]}</Pill></span> : null}
+            </p>
           </div>
         </div>
         <div className="tools">
@@ -207,19 +214,21 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
         <section className="figures" aria-label="月次サマリー">
           <Figure label="出勤日数" value={m.workDays} unit="日" sub={m.leaveDays ? `有給 ${m.leaveDays}日` : "有給なし"} />
           <Figure label="総労働時間" value={dur(m.workMin)} sub="休憩を除く実働" />
-          <Figure label="時間外労働" value={dur(m.overtimeMin)} sub={m.weeklyOvertimeMin ? `うち週40時間超 ${dur(m.weeklyOvertimeMin)}` : "日8時間超の合計"} hot={m.overtimeMin > 45 * 60} />
+          <Figure label="時間外労働" value={dur(m.overtimeMin)} sub={overtimeSub(m, variable)} hot={m.overtimeMin > monthLimit * 60} />
           <Figure label="深夜労働" value={dur(m.nightMin)} sub="22:00〜翌5:00" />
-          <Figure label="法定休日労働" value={dur(m.holidayMin)} sub="日曜の勤務" />
+          <Figure label="法定休日労働" value={dur(m.holidayMin)} sub="法定休日の勤務" />
           <Figure label="要確認の打刻" value={m.absentDays + m.incompleteDays} unit="日" sub="打刻なし・退勤漏れ" warn={m.absentDays + m.incompleteDays > 0} hot={m.absentDays + m.incompleteDays > 0} />
         </section>
+
+        {period ? <PeriodPanel p={period} today={today} /> : null}
 
         <div className="cols-2">
           <section className="panel" aria-labelledby="chart-t">
             <div className="panel-head">
               <h2 id="chart-t">月別の時間外労働<span className="sub">{ymLabel(data.months[0]!)}〜（協定期間）</span></h2>
-              <span className="legend"><span>破線は月45時間</span></span>
+              <span className="legend"><span>破線は月{monthLimit}時間</span></span>
             </div>
-            <div className="panel-body"><OvertimeChart series={data.series} selected={ym} currentYm={today.slice(0, 7)} /></div>
+            <div className="panel-body"><OvertimeChart series={data.series} selected={ym} currentYm={today.slice(0, 7)} limitHours={monthLimit} /></div>
           </section>
           <section className="panel" aria-labelledby="al-t">
             <div className="panel-head">
@@ -228,7 +237,7 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
             </div>
             <div className="panel-body">
               {risk.alerts.length === 0 ? (
-                <p style={{ margin: 0, color: "var(--ink-2)" }}>基準内です。年の時間外累計は {hours1(risk.yearOvertime)}時間、月45時間超は {risk.over45Count}回です。</p>
+                <p style={{ margin: 0, color: "var(--ink-2)" }}>基準内です。年の時間外累計は {hours1(risk.yearOvertime)}時間、月{monthLimit}時間超は {risk.over45Count}回です。</p>
               ) : (
                 <ul className="alert-list">
                   {risk.alerts.map((a, i) => (
@@ -240,8 +249,8 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
                 </ul>
               )}
               <dl className="kv" style={{ marginTop: 10 }}>
-                <div><dt>年の時間外累計（上限720時間）</dt><dd>{hours1(risk.yearOvertime)}h</dd></div>
-                <div><dt>月45時間超の回数（上限6回）</dt><dd>{risk.over45Count}回</dd></div>
+                <div><dt>年の時間外累計（{me.settings.specialClause ? "特別条項の上限720時間" : `上限${yearLimit}時間`}）</dt><dd>{hours1(risk.yearOvertime)}h</dd></div>
+                <div><dt>月{monthLimit}時間超の回数（特別条項は年6回まで）</dt><dd>{risk.over45Count}回</dd></div>
                 <div><dt>{ym === today.slice(0, 7) ? "月末見込" : "当月実績"}</dt><dd>{hours1(risk.outlook.projOvertime)}h</dd></div>
               </dl>
             </div>
@@ -254,7 +263,7 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
               <thead>
                 <tr>
                   <th>日付</th><th>区分</th><th className="r">出勤</th><th className="r">退勤</th><th className="r">休憩</th>
-                  <th className="r">実働</th><th className="r">法定内</th><th className="r">時間外（日）</th><th className="r">深夜</th><th>備考</th>
+                  <th className="r">実働</th><th className="r">法定内</th><th className="r">{variable ? "時間外" : "時間外（日）"}</th><th className="r">深夜</th><th>備考</th>
                 </tr>
               </thead>
               <tbody>
@@ -297,23 +306,67 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
           </div>
         </section>
         <p className="note">
-          合計の時間外には、週40時間を超えた分{m.weeklyOvertimeMin ? `（${dur(m.weeklyOvertimeMin)}）` : ""}を含みます。日別の欄は日8時間超のみを表示します。
+          {variable
+            ? "日別の「時間外」は、その日に新たに発生した時間外（日・週・期間の判定の合計）です。週・期間の超過は、超えた日に付きます。本日は集計前です。"
+            : `合計の時間外には、週40時間を超えた分${m.weeklyOvertimeMin ? `（${dur(m.weeklyOvertimeMin)}）` : ""}を含みます。日別の欄は日8時間超のみを表示します。`}
         </p>
       </div>
     </>
   );
 }
 
+/** 時間外の内訳の表示 */
+function overtimeSub(m: AttendanceDetailResponse["month"], variable: boolean): string {
+  if (!variable) return m.weeklyOvertimeMin ? `うち週40時間超 ${dur(m.weeklyOvertimeMin)}` : "日8時間超の合計";
+  const parts = [`日 ${dur(m.overtimeMin - m.weeklyOvertimeMin - m.periodOvertimeMin)}`];
+  if (m.weeklyOvertimeMin) parts.push(`週 ${dur(m.weeklyOvertimeMin)}`);
+  if (m.periodOvertimeMin) parts.push(`期間 ${dur(m.periodOvertimeMin)}`);
+  return `内訳: ${parts.join(" / ")}`;
+}
+
+const STYLE_PERIOD: Record<string, string> = { monthly: "変形期間", yearly: "変形期間（1年）", weekly: "変形期間（週）", flex: "清算期間" };
+
+/** 変形期間・清算期間の進み具合: 実労働を、法定労働時間の総枠と、所定労働時間と比べる */
+function PeriodPanel({ p, today }: { p: NonNullable<AttendanceDetailResponse["period"]>; today: string }) {
+  const frameH = p.frameMin / 60;
+  const diff = p.workMin - p.contractSoFarMin;
+  const level = p.workMin > p.frameMin ? "violation" : p.workMin > p.frameMin * 0.9 ? "warning" : "ok";
+  const sign = (n: number) => (n > 0 ? "+" : n < 0 ? "−" : "±") + dur(Math.abs(n));
+  return (
+    <section className="panel" aria-labelledby="per-t">
+      <div className="panel-head">
+        <h2 id="per-t">{STYLE_PERIOD[p.style] ?? "期間"}の状況<span className="sub">{p.start.replace(/-/g, "/")} 〜 {p.end.replace(/-/g, "/")}</span></h2>
+        {p.end >= today ? <Pill tone="live" plain>残り{p.remainingDays}日</Pill> : <Pill plain>終了</Pill>}
+      </div>
+      <div className="panel-body" style={{ display: "grid", gap: 12 }}>
+        <div className="gauge-cell">
+          <Gauge mtd={p.workMin} proj={p.workMin} scaleHours={Math.max(frameH * 1.15, p.workMin / 60 * 1.05)} tickHours={frameH} level={level} />
+          <span className="num">{dur(p.workMin)}</span>
+        </div>
+        <p className="note" style={{ margin: 0 }}>縦線は法定労働時間の総枠（{dur(p.frameMin)}）です。総枠を超えた分が、時間外になります。</p>
+        <dl className="kv">
+          <div><dt>実労働（法定休日の勤務を除く）</dt><dd>{dur(p.workMin)}</dd></div>
+          <div><dt>法定労働時間の総枠</dt><dd>{dur(p.frameMin)}</dd></div>
+          <div><dt>総枠までの残り</dt><dd>{p.workMin > p.frameMin ? `超過 ${dur(p.workMin - p.frameMin)}` : dur(p.frameMin - p.workMin)}</dd></div>
+          <div><dt>所定労働時間（期間全体）</dt><dd>{dur(p.contractMin)}</dd></div>
+          <div><dt>前日までの所定との差</dt><dd>{sign(diff)}</dd></div>
+          <div><dt>期間内の時間外（ここまで）</dt><dd>{dur(p.overtimeMin)}</dd></div>
+        </dl>
+      </div>
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------- 月別グラフ
 
-function OvertimeChart({ series, selected, currentYm }: { series: { ym: string; actual: number; proj: number }[]; selected: string; currentYm: string }) {
+function OvertimeChart({ series, selected, currentYm, limitHours = 45 }: { series: { ym: string; actual: number; proj: number }[]; selected: string; currentYm: string; limitHours?: number }) {
   const W = 560;
   const H = 210;
   const pad = { l: 34, r: 8, t: 14, b: 26 };
   const max = Math.max(80 * 60, ...series.map((d) => d.proj)) * 1.05;
   const bw = (W - pad.l - pad.r) / Math.max(series.length, 1);
   const y = (min: number) => pad.t + (H - pad.t - pad.b) * (1 - min / max);
-  const ticks = [0, 20, 45, 60, 80].filter((t) => t * 60 <= max);
+  const ticks = [0, 20, limitHours, 60, 80].filter((t) => t * 60 <= max);
 
   return (
     <svg className="bars-chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="月別の時間外労働時間">
@@ -325,14 +378,14 @@ function OvertimeChart({ series, selected, currentYm }: { series: { ym: string; 
       </defs>
       {ticks.map((t) => (
         <g key={t}>
-          <line x1={pad.l} x2={W - pad.r} y1={y(t * 60)} y2={y(t * 60)} stroke={t === 45 ? "#16202a" : "#ebeef0"} strokeDasharray={t === 45 ? "4 3" : undefined} strokeWidth={t === 45 ? 1.2 : 1} />
+          <line x1={pad.l} x2={W - pad.r} y1={y(t * 60)} y2={y(t * 60)} stroke={t === limitHours ? "#16202a" : "#ebeef0"} strokeDasharray={t === limitHours ? "4 3" : undefined} strokeWidth={t === limitHours ? 1.2 : 1} />
           <text x={pad.l - 6} y={y(t * 60) + 4} textAnchor="end" fontSize="11" fill="#6f7b86" fontFamily="Barlow Semi Condensed, sans-serif">{t}</text>
         </g>
       ))}
       {series.map((d, i) => {
         const x = pad.l + i * bw + bw * 0.2;
         const w = bw * 0.6;
-        const color = d.proj > 80 * 60 ? "#c42b40" : d.proj > 45 * 60 ? "#e3a008" : "#1d3a5c";
+        const color = d.proj > 80 * 60 ? "#c42b40" : d.proj > limitHours * 60 ? "#e3a008" : "#1d3a5c";
         return (
           <g key={d.ym} opacity={d.ym === selected ? 1 : 0.62}>
             {d.ym === currentYm ? (

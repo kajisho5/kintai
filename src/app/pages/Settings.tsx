@@ -22,6 +22,7 @@ export function Settings() {
       </header>
       <div className="stack">
         <GeneralPanel s={data} onSaved={() => { reload(); refresh(); }} />
+        <WorkRulesPanel s={data} onSaved={() => { reload(); refresh(); }} />
         <HolidayPanel holidays={data.holidays} stale={data.holidaysStale} today={me.today} onChanged={reload} />
         <section className="panel" aria-labelledby="x-title">
           <div className="panel-head"><h2 id="x-title">データの書き出し</h2></div>
@@ -86,6 +87,101 @@ function GeneralPanel({ s, onSaved }: { s: SettingsResponse; onSaved: () => void
   );
 }
 
+const hm = (min: number) => `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+const toMin = (v: string): number => Number(v.slice(0, 2)) * 60 + Number(v.slice(3, 5));
+const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
+
+/** 労働時間制度に関する設定（法定休日・週の法定労働時間・フレックス・1年単位の変形） */
+function WorkRulesPanel({ s, onSaved }: { s: SettingsResponse; onSaved: () => void }) {
+  const [legalDow, setLegalDow] = useState(s.legalHolidayDow);
+  const [week44, setWeek44] = useState(s.week44);
+  const [flexMonths, setFlexMonths] = useState(s.flexMonths);
+  const [flexStart, setFlexStart] = useState(s.flexStartMonth);
+  const [yearlyStart, setYearlyStart] = useState(s.yearlyStartMonth);
+  const [core, setCore] = useState(s.flexCoreStart !== undefined);
+  const [coreStart, setCoreStart] = useState(hm(s.flexCoreStart ?? 600));
+  const [coreEnd, setCoreEnd] = useState(hm(s.flexCoreEnd ?? 900));
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setMsg("");
+    try {
+      await api("/api/settings", {
+        method: "PATCH",
+        body: { legalHolidayDow: legalDow, week44, flexMonths, flexStartMonth: flexStart, yearlyStartMonth: yearlyStart, flexCore: core ? { start: toMin(coreStart), end: toMin(coreEnd) } : null },
+      });
+      setMsg("保存しました");
+      onSaved();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "保存に失敗しました");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="panel" aria-labelledby="w-title">
+      <div className="panel-head"><h2 id="w-title">労働時間制度<span className="sub">変形労働時間制・フレックスタイム制・法定休日</span></h2></div>
+      <form className="form settings-form" onSubmit={save}>
+        <label>
+          法定休日の曜日
+          <select className="field" style={{ maxWidth: 160 }} value={legalDow} onChange={(e) => setLegalDow(Number(e.target.value))}>
+            {WD.map((d, i) => <option key={d} value={i}>{d}曜日</option>)}
+          </select>
+          <small className="hint">就業規則で定めた法定休日です。この日の勤務は休日労働（割増35%以上）として集計します。「シフト」で、週ごとに法定休日の日を指定した週は、その日が法定休日になります（4週4休などの変形休日制）。</small>
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={week44} onChange={(e) => setWeek44(e.target.checked)} />
+          <span>
+            <b>週の法定労働時間が44時間（特例措置対象事業場）</b>
+            <small className="hint">常時10人未満の、商業・映画演劇業（映画製作を除く）・保健衛生業・接客娯楽業の事業場だけが対象です。該当しない場合はオフのままにしてください（週40時間）。</small>
+          </span>
+        </label>
+        <div className="row2">
+          <label>
+            フレックスタイム制の清算期間
+            <select className="field" value={flexMonths} onChange={(e) => setFlexMonths(Number(e.target.value))}>
+              {[1, 2, 3].map((m) => <option key={m} value={m}>{m}か月</option>)}
+            </select>
+          </label>
+          <label>
+            清算期間の起点月
+            <select className="field" value={flexStart} onChange={(e) => setFlexStart(Number(e.target.value))}>
+              {MONTHS.map((m) => <option key={m} value={m}>{m}月</option>)}
+            </select>
+          </label>
+        </div>
+        <small className="hint" style={{ marginTop: -6 }}>清算期間が1か月を超える場合は、各月の労働が週平均50時間を超えた分も、その月の時間外になります。</small>
+        <label className="check">
+          <input type="checkbox" checked={core} onChange={(e) => setCore(e.target.checked)} />
+          <span><b>コアタイムがある</b><small className="hint">コアタイムに出勤・退勤が間に合わなかった日は、勤怠の備考に「コアタイム外」と表示します。</small></span>
+        </label>
+        {core ? (
+          <div className="row2">
+            <label>コアタイム 開始<input className="field" type="time" value={coreStart} onChange={(e) => setCoreStart(e.target.value)} required /></label>
+            <label>コアタイム 終了<input className="field" type="time" value={coreEnd} onChange={(e) => setCoreEnd(e.target.value)} required /></label>
+          </div>
+        ) : null}
+        <label>
+          1年単位の変形期間の起点月
+          <select className="field" style={{ maxWidth: 160 }} value={yearlyStart} onChange={(e) => setYearlyStart(Number(e.target.value))}>
+            {MONTHS.map((m) => <option key={m} value={m}>{m}月</option>)}
+          </select>
+          <small className="hint">労使協定で定めた対象期間（1年）の起点です。その月の1日から12か月を1つの変形期間として、総枠（週40時間×日数÷7）を計算します。</small>
+        </label>
+        <div className="actions" style={{ justifyContent: "flex-start", alignItems: "center" }}>
+          <button type="submit" className="btn primary" disabled={busy}>{busy ? "保存中…" : "保存する"}</button>
+          <span role="status" style={{ color: msg === "保存しました" ? "var(--matsu)" : "var(--beni)", fontWeight: 700 }}>{msg}</span>
+        </div>
+        <p className="note" style={{ margin: 0 }}>これらの設定は、過去の月の集計にも反映されます。労使協定の内容と合わせてください。</p>
+      </form>
+    </section>
+  );
+}
+
 function HolidayPanel({ holidays, stale, today, onChanged }: { holidays: HolidayRow[]; stale: boolean; today: string; onChanged: () => void }) {
   const years = useMemo(() => [...new Set(holidays.map((h) => h.date.slice(0, 4)))], [holidays]);
   const [year, setYear] = useState(() => (years.includes(today.slice(0, 4)) ? today.slice(0, 4) : (years[years.length - 1] ?? today.slice(0, 4))));
@@ -119,7 +215,7 @@ function HolidayPanel({ holidays, stale, today, onChanged }: { holidays: Holiday
   return (
     <section className="panel" aria-labelledby="h-title">
       <div className="panel-head">
-        <h2 id="h-title">休日カレンダー<span className="sub">日曜は法定休日、土曜と所定の休みはそれぞれの社員の設定で扱います</span></h2>
+        <h2 id="h-title">休日カレンダー<span className="sub">法定休日は「労働時間制度」の設定、所定の休みはそれぞれの社員の設定で扱います</span></h2>
         <div className="seg" role="group" aria-label="年">
           {years.map((y) => <button key={y} type="button" aria-pressed={year === y} onClick={() => setYear(y)}>{y}</button>)}
         </div>

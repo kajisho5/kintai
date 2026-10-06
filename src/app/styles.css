@@ -898,7 +898,7 @@ table.tbl {
 }
 
 .dg-ticks span.first {
-  transform: translate(-30%, -50%);
+  transform: translate(3px, -50%);
 }
 
 .dg-ticks span {
@@ -1833,4 +1833,147 @@ code.pw {
 
 .login-card .brand {
   margin-bottom: 4px;
+}
+
+
+/* ---------------------------------------------------------------- シフト表 */
+.sched {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+  min-width: 100%;
+}
+
+.sched th,
+.sched td {
+  border-bottom: 1px solid var(--line-2);
+  border-right: 1px solid var(--line-2);
+  padding: 0;
+  text-align: center;
+  min-width: 46px;
+  height: 40px;
+}
+
+.sched thead th {
+  background: var(--surface);
+  font-weight: 600;
+  height: 44px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.sched thead th span {
+  display: block;
+  font-family: var(--font-num);
+  font-size: 14px;
+  line-height: 1.1;
+}
+
+.sched thead th small {
+  display: block;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+.sched .who {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface);
+  min-width: 150px;
+  text-align: left;
+  padding: 4px 12px;
+  box-shadow: 1px 0 0 var(--line);
+}
+
+.sched .who b {
+  display: block;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sched .who small {
+  display: block;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.sched .sun {
+  color: var(--beni);
+}
+
+.sched .sat {
+  color: var(--ai-mid);
+}
+
+.sched td.sun,
+.sched td.sat,
+.sched td.hol,
+.sched th.hol {
+  background: #f8f9f8;
+}
+
+.sched .today {
+  box-shadow: inset 2px 0 0 var(--asagi), inset -2px 0 0 var(--asagi);
+}
+
+.sched td button,
+.sched td span {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  min-height: 40px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-family: var(--font-num);
+  color: inherit;
+}
+
+.sched td button {
+  cursor: pointer;
+}
+
+.sched td button:hover,
+.sched td button:focus-visible {
+  background: var(--ai-soft);
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--ai-mid);
+}
+
+.sched td.work {
+  background: var(--ai-soft);
+  color: var(--ai);
+  font-weight: 600;
+}
+
+.sched td.off {
+  background: #eceeed;
+  color: var(--ink-2);
+}
+
+.sched td.legal {
+  background: var(--beni-soft);
+  color: #8d1a2b;
+  font-weight: 700;
+}
+
+.sched td.default {
+  color: var(--ink-3);
+}
+
+.pick-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 6px 14px;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 8px 10px;
 }

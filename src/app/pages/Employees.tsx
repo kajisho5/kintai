@@ -2,6 +2,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Copy, Download, KeyRound, Pencil, Plus, Search, Upload, UserMinus, UserPlus } from "lucide-react";
 import { api, useApi } from "../api";
 import type { EmployeeAdmin, EmployeesResponse, ImportResponse } from "../../domain/api";
+import { WORK_STYLES, WORK_STYLE_LABEL, type WorkStyle } from "../../domain/types";
 import { csvDownload, shortDate } from "../format";
 import { useSession } from "../session";
 import { ConfirmDialog } from "../ui/Confirm";
@@ -10,7 +11,8 @@ import { Modal } from "../ui/Modal";
 
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0]; // 表示は月曜はじまり
 const DAY_CHAR = "日月火水木金土";
-const CSV_HEADER = ["社員ID", "氏名", "部署", "役職", "雇用区分", "権限", "メール", "入社日", "所定労働日", "所定労働時間", "始業時刻", "繰越有給"];
+const CSV_HEADER = ["社員ID", "氏名", "部署", "役職", "雇用区分", "権限", "メール", "入社日", "所定労働日", "所定労働時間", "始業時刻", "繰越有給", "勤務区分"];
+const STYLE_SHORT: Record<WorkStyle, string> = { fixed: "", monthly: "1か月変形", yearly: "1年変形", weekly: "1週間変形", flex: "フレックス" };
 
 const hm = (min: number) => `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
 const toMin = (v: string): number => Number(v.slice(0, 2)) * 60 + Number(v.slice(3, 5));
@@ -82,7 +84,11 @@ export function Employees() {
                   <tr key={r.id} className={r.active ? "" : "rest"}>
                     <td><Who name={r.name} sub={`ID ${r.id}`} /></td>
                     <td>{r.dept}{r.title ? <span style={{ color: "var(--ink-3)" }}>・{r.title}</span> : null}</td>
-                    <td>{r.kind}{r.role === "admin" ? <span style={{ marginLeft: 6 }}><Pill tone="ai" plain>管理者</Pill></span> : null}</td>
+                    <td>
+                      {r.kind}
+                      {r.role === "admin" ? <span style={{ marginLeft: 6 }}><Pill tone="ai" plain>管理者</Pill></span> : null}
+                      {r.workStyle !== "fixed" ? <span style={{ marginLeft: 6 }}><Pill tone="live" plain>{STYLE_SHORT[r.workStyle]}</Pill></span> : null}
+                    </td>
                     <td>{daysLabel(r.workDays)} {hm(r.schedStart)}〜 <span style={{ color: "var(--ink-3)" }}>{r.baseMin / 60}h</span></td>
                     <td>{r.hired.replace(/-/g, "/")}</td>
                     <td>
@@ -185,6 +191,7 @@ function EmployeeForm({ emp, depts, onClose, onSaved }: { emp: EmployeeAdmin | n
     title: emp?.title ?? "",
     kind: emp?.kind ?? ("正社員" as "正社員" | "パート"),
     role: emp?.role ?? ("employee" as "admin" | "employee"),
+    workStyle: emp?.workStyle ?? ("fixed" as WorkStyle),
     email: emp?.email ?? "",
     workDays: emp?.workDays ?? [1, 2, 3, 4, 5],
     baseHours: emp ? emp.baseMin / 60 : 8,
@@ -207,6 +214,7 @@ function EmployeeForm({ emp, depts, onClose, onSaved }: { emp: EmployeeAdmin | n
       title: f.title,
       kind: f.kind,
       role: f.role,
+      workStyle: f.workStyle,
       email: f.email,
       workDays: f.workDays,
       baseMin: Math.round(f.baseHours * 60),
@@ -259,6 +267,19 @@ function EmployeeForm({ emp, depts, onClose, onSaved }: { emp: EmployeeAdmin | n
           </select>
         </label>
       </div>
+      <label>
+        勤務区分（労働時間制度）
+        <select className="field" value={f.workStyle} onChange={(e) => set("workStyle", e.target.value as WorkStyle)}>
+          {WORK_STYLES.map((w) => <option key={w} value={w}>{WORK_STYLE_LABEL[w]}</option>)}
+        </select>
+        {f.workStyle !== "fixed" ? (
+          <small className="hint">
+            {f.workStyle === "flex"
+              ? "日・週の時間外はなく、清算期間の総枠（会社設定）を超えた分が時間外になります。所定労働日・時間は、所定労働時間（予定）の目安です。"
+              : "あらかじめ定めた労働時間（「シフト」画面で登録）をもとに、日・週・期間の順で時間外を判定します。シフトが無い日は、下の所定労働日・時間を使います。"}
+          </small>
+        ) : null}
+      </label>
       <label>メールアドレス（任意）<input className="field" type="email" value={f.email} onChange={(e) => set("email", e.target.value)} maxLength={120} /></label>
       <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
         <legend style={{ fontWeight: 700, color: "var(--ink-2)", padding: 0, marginBottom: 5 }}>所定労働日</legend>
@@ -381,14 +402,14 @@ function ImportDialog({ open, onClose, onImported }: { open: boolean; onClose: (
   const template = () =>
     csvDownload("社員取り込みテンプレート.csv", [
       CSV_HEADER,
-      ["e101", "山田 太郎", "営業部", "課長", "正社員", "管理者", "taro@example.com", "2026-04-01", "月火水木金", "8", "9:00", "0"],
-      ["e102", "鈴木 花子", "営業部", "", "パート", "一般", "", "2026-05-01", "月水金", "5", "10:00", "0"],
+      ["e101", "山田 太郎", "営業部", "課長", "正社員", "管理者", "taro@example.com", "2026-04-01", "月火水木金", "8", "9:00", "0", "通常"],
+      ["e102", "鈴木 花子", "営業部", "", "パート", "一般", "", "2026-05-01", "月水金", "5", "10:00", "0", "1か月変形"],
     ]);
 
   return (
     <Modal open={open} onClose={close} title="CSVから社員を取り込む" wide>
       <div className="form">
-        <p style={{ margin: 0 }}>テンプレートに社員を入力して取り込みます。必須は「社員ID・氏名・部署・入社日」で、ほかは空欄のままで構いません（正社員・一般・月〜金・8時間・9:00として登録します）。</p>
+        <p style={{ margin: 0 }}>テンプレートに社員を入力して取り込みます。必須は「社員ID・氏名・部署・入社日」で、ほかは空欄のままで構いません（正社員・一般・月〜金・8時間・9:00・通常の勤務区分として登録します）。勤務区分は「通常・1か月変形・1年変形・1週間変形・フレックス」のいずれかです。</p>
         <div className="actions" style={{ justifyContent: "flex-start" }}>
           <button type="button" className="btn" onClick={template}><Download size={16} />テンプレートをダウンロード</button>
           <label className="btn" style={{ cursor: "pointer" }}>
