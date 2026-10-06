@@ -26,7 +26,7 @@ if (manager.findByCode("demo")) {
   process.exit(1);
 }
 const now = realClock("Asia/Tokyo").now();
-const tenant = manager.create({ code: "demo", name: "デモ商事株式会社", adminEmail: "admin@example.com", nowMs: now.ts });
+const tenant = manager.create({ code: "demo", name: "デモ商事株式会社", adminEmail: "admin@example.com", nowMs: now.ts, emailVerified: true });
 manager.update(tenant.id, { status: "active" });
 seedDemo(manager.db(tenant.id), { today: now.date, nowMin: now.min, password });
 manager.close();

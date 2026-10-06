@@ -34,6 +34,7 @@ export function billingRoutes({ manager, billing }: Deps): Hono<Env> {
       seatsUsed: seats,
       pricePerSeatJpy: PLAN.pricePerSeatJpy,
       monthlyEstimateJpy: Math.max(1, seats) * PLAN.pricePerSeatJpy,
+      emailVerified: !!t.adminEmailVerifiedAt,
       hasSubscription: !!t.stripeSubscriptionId && t.status !== "canceled",
       graceEndsAt: t.status === "past_due" && t.pastDueSince ? t.pastDueSince + PLAN.pastDueGraceDays * 86400_000 : undefined,
     };
@@ -44,6 +45,7 @@ export function billingRoutes({ manager, billing }: Deps): Hono<Env> {
     const admin = requireAdmin(c);
     const t = manager.findById(c.get("tenant").id)!;
     if (t.stripeSubscriptionId && t.status !== "canceled") throw new ApiError(409, "すでにご契約中です。お支払い方法の変更は「請求・お支払いの管理」から行えます");
+    if (!t.adminEmailVerifiedAt) throw new ApiError(403, "お申し込みの前に、メールアドレスの確認が必要です。届いた確認メールのリンクを開いてください", "EMAIL_UNVERIFIED");
     const seats = activeCount(c.get("db"));
     if (seats > PLAN.paidSeatLimit) throw new ApiError(409, `${PLAN.paidSeatLimit}名を超える場合は、お問い合わせください`);
     return c.json(await billing.createCheckout({ tenant: t, seats, email: t.adminEmail || admin.email || "" }));

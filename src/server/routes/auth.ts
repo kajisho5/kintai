@@ -5,7 +5,7 @@ import { z } from "zod";
 import { HOLIDAYS_JP_LAST_YEAR } from "../../domain/holidays-jp";
 import type { MeResponse } from "../../domain";
 import { burnPasswordCheck, checkCredentials, createSession, destroySession, hashPassword, LoginThrottle } from "../auth";
-import { activeCount, ApiError, brief, COOKIE, parse, pendingCount, type AppConfig, type Env } from "../context";
+import { activeCount, ApiError, brief, COOKIE, parse, pendingCount, requireAdmin, type AppConfig, type Env } from "../context";
 import { validateCode, type TenantManager } from "../control";
 import { audit, tx } from "../db";
 import { RateLimiter } from "../ratelimit";
@@ -28,6 +28,7 @@ export interface Deps {
 }
 
 const RESET_MINUTES = 60;
+export const VERIFY_HOURS = 24;
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
 export function clientIp(c: Context, trustProxy?: boolean): string {
@@ -38,6 +39,8 @@ export function clientIp(c: Context, trustProxy?: boolean): string {
   const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;
   return env?.incoming?.socket?.remoteAddress ?? "unknown";
 }
+
+const verifyLink = (appUrl: string, code: string, token: string) => `${appUrl}/app/#/verify?company=${encodeURIComponent(code)}&token=${token}`;
 
 const setSession = (c: Context, cfg: AppConfig, tenantId: string, token: string) =>
   setCookie(c, COOKIE, `${tenantId}.${token}`, { httpOnly: true, sameSite: "Lax", secure: cfg.secureCookie, path: "/", maxAge: cfg.sessionHours * 3600 });
@@ -78,6 +81,7 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
   const forgotKey = new RateLimiter(10, 60 * 60_000);
   const forgotKeyIp = new RateLimiter(3, 60 * 60_000);
   const resetIp = new RateLimiter(20, 10 * 60_000);
+  const verifyIp = new RateLimiter(30, 10 * 60_000);
 
   app.post("/api/auth/login", async (c) => {
     const body = parse(
@@ -155,7 +159,8 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
     const today = clock.now().date;
     let tenant;
     try {
-      tenant = manager.create({ code: b.code, name: b.companyName, adminEmail: b.email, tz, nowMs: now, termsVersion: TERMS_VERSION });
+      // メールを送れない環境（APP_URL 未設定）では確認の手段がないため、確認済みとして扱う
+      tenant = manager.create({ code: b.code, name: b.companyName, adminEmail: b.email, tz, nowMs: now, termsVersion: TERMS_VERSION, emailVerified: !appUrl });
     } catch (e) {
       // 事前の確認のあとで同じ企業IDが登録された（同時登録）場合
       if (e instanceof Error && /UNIQUE/i.test(e.message)) throw new ApiError(409, "この企業IDはすでに使われています");
@@ -177,10 +182,34 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
       throw e;
     }
     if (appUrl) {
-      const mail = templates.welcome({ adminName: b.adminName, companyName: b.companyName, code: tenant.code, loginUrl: `${appUrl}/app/`, trialDays: PLAN.trialDays });
+      const token = manager.issueEmailVerification(tenant.id, b.email, now, VERIFY_HOURS * 3600_000);
+      const mail = templates.welcome({
+        adminName: b.adminName,
+        companyName: b.companyName,
+        code: tenant.code,
+        loginUrl: `${appUrl}/app/`,
+        verifyUrl: verifyLink(appUrl, tenant.code, token),
+        trialDays: PLAN.trialDays,
+        hours: VERIFY_HOURS,
+      });
       void mailer.send({ to: b.email, ...mail }).catch((e) => console.error("ご登録メールを送れませんでした:", e instanceof Error ? e.message : e));
     }
     return c.json({ ok: true, code: tenant.code }, 201);
+  });
+
+  // ---- メールアドレスの確認（メールのリンクから開く。ログインしていなくてもよい） ----
+
+  app.post("/api/signup/verify", async (c) => {
+    const b = parse(z.object({ company: z.string().trim().toLowerCase().min(1).max(40), token: z.string().min(20).max(100) }), await c.req.json().catch(() => null));
+    const now = clockFor("Asia/Tokyo").now().ts;
+    const ip = clientIp(c, config.trustProxy);
+    if (verifyIp.blocked(ip, now)) throw new ApiError(429, "しばらく待ってからもう一度お試しください");
+    verifyIp.record(ip, now);
+    const tenant = manager.findByCode(b.company);
+    const done = tenant ? manager.confirmEmail(tenant.id, b.token, now) : undefined;
+    if (!tenant || !done) throw new ApiError(400, "このリンクは無効か、有効期限が切れています。ログインして、確認メールをもう一度送ってください");
+    audit(manager.db(tenant.id), now, "-", "email_verified", { ip });
+    return c.json({ ok: true, code: tenant.code });
   });
 
   // ---- パスワードの再設定（メールアドレスを登録している人向け） ----
@@ -196,7 +225,8 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
     forgotKeyIp.record(`${k}|${ip}`, now);
 
     const tenant = manager.findByCode(b.company);
-    if (tenant && tenant.status !== "suspended" && appUrl) {
+    // メールアドレスが未確認の会社には送らない（他人のアドレスで登録された場合に、そのアドレスへ繰り返し送られるのを防ぐ）
+    if (tenant && tenant.status !== "suspended" && tenant.adminEmailVerifiedAt && appUrl) {
       const db = manager.db(tenant.id);
       const emps = db.prepare("SELECT id FROM employees WHERE active = 1 AND lower(email) = ?").all(b.email) as { id: string }[];
       for (const e of emps) {
@@ -242,9 +272,10 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
 }
 
 /** ログイン後に使える認証まわりの API（自分の情報・パスワード変更） */
-export function accountRoutes({ config }: Deps): Hono<Env> {
+export function accountRoutes({ config, manager, mailer, appUrl }: Deps): Hono<Env> {
   const app = new Hono<Env>();
   const throttle = new LoginThrottle();
+  const resendLimit = new RateLimiter(5, 60 * 60_000);
   // 成功も含めて回数を数える（重いパスワード計算を繰り返し呼ばせないため）
   const changeLimit = new RateLimiter(10, 60 * 60_000);
 
@@ -271,11 +302,41 @@ export function accountRoutes({ config }: Deps): Hono<Env> {
         trialDaysLeft: access.trialDaysLeft,
         seatsUsed: activeCount(db),
         seatLimit: access.seatLimit,
+        emailVerified: !!tenant.adminEmailVerifiedAt,
+        ...(me.role === "admin" && !tenant.adminEmailVerifiedAt ? { adminEmail: tenant.adminEmail } : {}),
       },
       settings: { fyStartMonth: settings.fyStartMonth, specialClause: settings.specialClause },
       holidaysStale: year > HOLIDAYS_JP_LAST_YEAR || (year === HOLIDAYS_JP_LAST_YEAR && month >= 10),
     };
     return c.json(body);
+  });
+
+  /** 確認メールを再送する。入力ミスのときは、メールアドレスを直して送り直せる（確認が済むまで） */
+  app.post("/api/auth/verify/resend", async (c) => {
+    const me = requireAdmin(c);
+    const tenant = manager.findById(c.get("tenant").id)!;
+    const db = c.get("db");
+    const now = c.get("clock").now().ts;
+    const body = parse(z.object({ email: z.string().trim().toLowerCase().email("メールアドレスの形式が正しくありません").max(120).optional() }), await c.req.json().catch(() => ({})));
+    if (tenant.adminEmailVerifiedAt) throw new ApiError(409, "メールアドレスはすでに確認済みです");
+    if (!appUrl) throw new ApiError(503, "メールを送信できない設定です。運営にお問い合わせください");
+    if (resendLimit.blocked(tenant.id, now)) throw new ApiError(429, "確認メールの送信が多すぎます。しばらくしてからお試しください");
+    resendLimit.record(tenant.id, now);
+    if (body.email && body.email !== tenant.adminEmail) {
+      manager.changeAdminEmail(tenant.id, body.email);
+      db.prepare("UPDATE employees SET email = ? WHERE id = ?").run(body.email, me.id);
+      audit(db, now, me.id, "admin_email_changed", { from: tenant.adminEmail, to: body.email });
+    }
+    const email = body.email ?? tenant.adminEmail;
+    const token = manager.issueEmailVerification(tenant.id, email, now, VERIFY_HOURS * 3600_000);
+    try {
+      await mailer.send({ to: email, ...templates.verifyEmail({ adminName: me.name, verifyUrl: verifyLink(appUrl, tenant.code, token), hours: VERIFY_HOURS }) });
+    } catch (e) {
+      console.error("確認メールを送れませんでした:", e instanceof Error ? e.message : e);
+      throw new ApiError(502, "メールを送信できませんでした。しばらくしてからもう一度お試しください");
+    }
+    audit(db, now, me.id, "email_verification_sent", {});
+    return c.json({ ok: true, email });
   });
 
   app.post("/api/auth/password", async (c) => {

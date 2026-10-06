@@ -69,6 +69,7 @@ export function Billing() {
         {waiting ? <div className="banner info" role="status">お申し込みを確認しています。数秒お待ちください…</div> : null}
         {returned && !waiting && data.state === "active" ? <div className="banner info" role="status">お申し込みありがとうございます。ご契約が開始されました。</div> : null}
         {err ? <div className="banner bad" role="alert">{err}</div> : null}
+        {!data.emailVerified && !data.hasSubscription ? <div className="banner warn" role="status">お申し込みの前に、メールアドレスの確認が必要です。届いた確認メールのリンクを開いてください（画面上部から再送できます）。</div> : null}
         {data.state === "past_due" ? (
           <div className="banner warn" role="alert">
             お支払いを確認できていません。「請求・お支払い方法の管理」からカード情報をご確認ください。{data.graceEndsAt ? `${dateOf(data.graceEndsAt)}までにお支払いが確認できない場合、閲覧のみとなります。` : ""}
@@ -101,7 +102,7 @@ export function Billing() {
             ) : (
               <>
                 <p style={{ margin: 0 }}>クレジットカードでお申し込みいただけます。決済は Stripe の画面で行い、当サービスではカード情報を保存しません。お申し込み後すぐに、ご契約が開始されます。</p>
-                <div><button type="button" className="btn primary" disabled={busy} onClick={() => go("checkout")}><CreditCard size={16} />お申し込みへ進む</button></div>
+                <div><button type="button" className="btn primary" disabled={busy || !data.emailVerified} onClick={() => go("checkout")}><CreditCard size={16} />お申し込みへ進む</button></div>
               </>
             )}
           </div>

@@ -29,6 +29,10 @@ export interface MeResponse {
     trialDaysLeft?: number;
     seatsUsed: number;
     seatLimit: number;
+    /** 管理者のメールアドレスを確認済みか */
+    emailVerified: boolean;
+    /** 管理者のみ・未確認のときだけ: 確認メールの送り先 */
+    adminEmail?: string;
   };
   settings: { fyStartMonth: number; specialClause: boolean };
   /** 祝日データが古く、来年の祝日が未登録になりそう */
@@ -195,6 +199,8 @@ export interface BillingInfo {
   pricePerSeatJpy: number;
   /** 現在の人数での月額（税抜） */
   monthlyEstimateJpy: number;
+  /** 管理者のメールアドレスを確認済みか（未確認だとお申し込みできない） */
+  emailVerified: boolean;
   hasSubscription: boolean;
   /** 支払い遅延の猶予が終わる日時（遅延中のみ） */
   graceEndsAt?: number;

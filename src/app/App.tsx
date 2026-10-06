@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { CalendarCheck, ClipboardCheck, Clock3, KeyRound, CreditCard, LayoutGrid, LogOut, Settings as SettingsIcon, Table2, Users } from "lucide-react";
 import { BRAND } from "../brand";
 import { SessionProvider, useSession } from "./session";
@@ -6,6 +6,7 @@ import { useHashRoute } from "./ui/hooks";
 import { Avatar } from "./ui/kit";
 import { BrandMark } from "./ui/BrandMark";
 import { PasswordDialog } from "./ui/PasswordDialog";
+import { api } from "./api";
 import { Approvals } from "./pages/Approvals";
 import { Attendance, AttendanceDetail, defaultYm } from "./pages/Attendance";
 import { Billing } from "./pages/Billing";
@@ -33,6 +34,52 @@ function TenantBanner() {
     <div className={`banner ${m.tone}`} role="status">
       <span>{m.text}{!isAdmin && t.state !== "trialing" ? " 管理者にご連絡ください。" : ""}</span>
       {isAdmin ? <a className="link" href="#/billing" style={{ marginLeft: "auto" }}>{t.state === "past_due" ? "お支払いを確認する" : "お申し込み・請求"}</a> : null}
+    </div>
+  );
+}
+
+/** 管理者のメールアドレスが未確認のとき: 確認メールの再送と、入力ミスの訂正 */
+function EmailVerifyBanner() {
+  const { me, isAdmin, refresh } = useSession();
+  const [editing, setEditing] = useState(false);
+  const [email, setEmail] = useState(me.tenant.adminEmail ?? "");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  if (!isAdmin || me.tenant.emailVerified) return null;
+
+  const send = async (e?: FormEvent) => {
+    e?.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api<{ email: string }>("/api/auth/verify/resend", { method: "POST", body: editing && email.trim() !== me.tenant.adminEmail ? { email: email.trim() } : {} });
+      setMsg({ ok: true, text: `${r.email} に確認メールを送りました。` });
+      setEditing(false);
+      refresh();
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "送信に失敗しました" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="banner warn verify" role="status">
+      <span>
+        メールアドレス（{me.tenant.adminEmail}）の確認が済んでいません。届いたメールのリンクを開いてください。確認までは、お申し込みなどの一部の機能が使えません。
+        {msg ? <b className={msg.ok ? "" : "status-error"} role={msg.ok ? "status" : "alert"}> {msg.text}</b> : null}
+      </span>
+      {editing ? (
+        <form className="verify-edit" onSubmit={send}>
+          <input className="field" type="email" aria-label="メールアドレス" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <button className="btn sm primary" type="submit" disabled={busy}>この宛先に送る</button>
+          <button className="btn sm text" type="button" onClick={() => setEditing(false)}>やめる</button>
+        </form>
+      ) : (
+        <span className="verify-actions">
+          <button className="btn sm" type="button" disabled={busy} onClick={() => void send()}>確認メールを再送</button>
+          <button className="btn sm text" type="button" onClick={() => setEditing(true)}>アドレスを直す</button>
+        </span>
+      )}
     </div>
   );
 }
@@ -111,6 +158,7 @@ function Shell() {
       </aside>
       <main className="main">
         <TenantBanner />
+        <EmailVerifyBanner />
         <div className="mobile-logout">
           <button type="button" className="btn sm text" onClick={() => setPwOpen(true)}><KeyRound size={14} />パスワード変更</button>
           <button type="button" className="btn sm text" onClick={() => void logout()}><LogOut size={14} />ログアウト</button>

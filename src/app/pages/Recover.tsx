@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { BRAND } from "../../brand";
 import { api } from "../api";
 import { BrandMark } from "../ui/BrandMark";
@@ -126,6 +126,53 @@ export function Reset() {
         <div className="form-error" role="alert">{error}</div>
         <button className="btn primary" type="submit" disabled={busy || !password || !again}>{busy ? "変更中…" : "パスワードを変更する"}</button>
       </form>
+    </Shell>
+  );
+}
+
+/** 確認メールのリンクから開く: メールアドレスの確認を完了する（ログイン中でも未ログインでも開ける） */
+export function Verify({ loggedIn, onDone }: { loggedIn: boolean; onDone: () => void }) {
+  const params = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+  const company = params.get("company") ?? "";
+  const token = params.get("token") ?? "";
+  const [state, setState] = useState<{ status: "working" } | { status: "ok" } | { status: "error"; message: string }>(
+    company && token ? { status: "working" } : { status: "error", message: "メールに記載のリンクをそのまま開いてください。" },
+  );
+
+  useEffect(() => {
+    if (!company || !token) return;
+    let live = true;
+    api("/api/signup/verify", { method: "POST", body: { company, token } })
+      .then(() => live && setState({ status: "ok" }))
+      .catch((err) => live && setState({ status: "error", message: err instanceof Error ? err.message : "確認に失敗しました" }));
+    return () => {
+      live = false;
+    };
+  }, [company, token]);
+
+  const next = () => {
+    window.location.hash = "/";
+    onDone();
+  };
+  if (state.status === "working") {
+    return (
+      <Shell title="確認しています…">
+        <p style={{ margin: 0 }} role="status">少々お待ちください。</p>
+      </Shell>
+    );
+  }
+  if (state.status === "ok") {
+    return (
+      <Shell title="メールアドレスを確認しました">
+        <p style={{ margin: 0 }} role="status">ありがとうございます。確認が完了しました。</p>
+        <button type="button" className="btn primary" onClick={next}>{loggedIn ? "アプリに戻る" : "ログインへ"}</button>
+      </Shell>
+    );
+  }
+  return (
+    <Shell title="確認できませんでした">
+      <p style={{ margin: 0 }} role="alert">{state.message}</p>
+      <button type="button" className="btn" onClick={next}>{loggedIn ? "アプリに戻る" : "ログインへ"}</button>
     </Shell>
   );
 }

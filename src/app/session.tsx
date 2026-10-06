@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import type { MeResponse } from "../domain/api";
 import { api } from "./api";
 import { Login } from "./pages/Login";
-import { Forgot, Reset } from "./pages/Recover";
+import { Forgot, Reset, Verify } from "./pages/Recover";
 import { Signup } from "./pages/Signup";
 
 interface Base {
@@ -68,6 +68,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [load]);
 
   if (state.status === "loading") return <div className="splash" role="status" aria-label="読み込み中" />;
+  // 確認メールのリンクは、ログイン中でも未ログインでも同じ画面で処理する
+  if (window.location.hash.startsWith("#/verify")) return <Verify loggedIn={state.status === "authed"} onDone={load} />;
   if (state.status === "anon") {
     const h = window.location.hash;
     if (h.startsWith("#/signup")) return <Signup onDone={load} />;

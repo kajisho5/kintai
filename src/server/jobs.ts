@@ -26,7 +26,7 @@ export interface JobSummary {
  * 定期ジョブ（1時間ごとに実行してよい。いずれも繰り返しても結果が変わらない）。
  *  - 無料トライアル終了の案内メール（1社1回）
  *  - 座席数が Stripe に反映できていない会社の再同期
- *  - 期限切れのセッション・パスワード再設定トークンの削除
+ *  - 期限切れのセッション・パスワード再設定・メール確認トークンの削除
  */
 export async function runJobs(d: JobDeps, opts: { fullSeatReconcile?: boolean } = {}): Promise<JobSummary> {
   const out: JobSummary = { reminders: 0, seatsSynced: 0, cleaned: 0 };
@@ -34,7 +34,8 @@ export async function runJobs(d: JobDeps, opts: { fullSeatReconcile?: boolean } 
     const now = d.clockFor(t.tz).now().ts;
     const db = d.manager.db(t.id);
 
-    if (t.status === "trialing" && t.trialReminderSentAt === undefined && t.trialEndsAt > now && t.trialEndsAt - now <= TRIAL_REMINDER_DAYS * DAY) {
+    // メールアドレスが未確認の会社には送らない
+    if (t.status === "trialing" && t.adminEmailVerifiedAt && t.trialReminderSentAt === undefined && t.trialEndsAt > now && t.trialEndsAt - now <= TRIAL_REMINDER_DAYS * DAY) {
       const admin = db.prepare("SELECT name FROM employees WHERE role = 'admin' AND active = 1 ORDER BY id LIMIT 1").get() as { name: string } | undefined;
       const daysLeft = Math.max(1, Math.ceil((t.trialEndsAt - now) / DAY));
       const mail = templates.trialEnding({ adminName: admin?.name ?? "ご担当者", daysLeft, billingUrl: d.appUrl ? `${d.appUrl}/app/#/billing` : "（管理画面の「請求」から）" });
@@ -66,5 +67,6 @@ export async function runJobs(d: JobDeps, opts: { fullSeatReconcile?: boolean } 
     out.cleaned += Number(db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(now).changes);
     out.cleaned += Number(db.prepare("DELETE FROM password_resets WHERE expires_at < ? OR used_at IS NOT NULL").run(now - DAY).changes);
   }
+  out.cleaned += d.manager.cleanEmailVerifications(d.clockFor("Asia/Tokyo").now().ts, DAY);
   return out;
 }

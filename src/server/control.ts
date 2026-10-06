@@ -1,5 +1,5 @@
 import { mkdirSync, rmSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openDb, type Db } from "./db";
@@ -18,6 +18,8 @@ export interface Tenant {
   status: TenantStatus;
   trialEndsAt: number;
   adminEmail: string;
+  /** 管理者のメールアドレスの持ち主であることを確認した時刻（未確認なら未設定） */
+  adminEmailVerifiedAt?: number;
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;
   /** 人数課金の対象になっているサブスクリプション項目（座席数の更新に使う） */
@@ -40,6 +42,7 @@ interface TenantRow {
   status: TenantStatus;
   trial_ends_at: number;
   admin_email: string;
+  admin_email_verified_at: number | null;
   stripe_customer_id: string | null;
   stripe_subscription_id: string | null;
   stripe_item_id: string | null;
@@ -50,7 +53,7 @@ interface TenantRow {
   created_at: number;
 }
 
-const CONTROL_MIGRATIONS = [
+export const CONTROL_MIGRATIONS = [
   {
     id: 1,
     name: "tenants",
@@ -83,7 +86,26 @@ const CONTROL_MIGRATIONS = [
       CREATE TABLE stripe_events (id TEXT PRIMARY KEY, type TEXT NOT NULL, received_at INTEGER NOT NULL);
     `,
   },
+  {
+    id: 3,
+    name: "email_verification",
+    sql: `
+      ALTER TABLE tenants ADD COLUMN admin_email_verified_at INTEGER;
+      -- この機能より前に登録された会社は、確認済みとして扱う
+      UPDATE tenants SET admin_email_verified_at = created_at;
+      CREATE TABLE email_verifications (
+        token_hash TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        email TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER
+      );
+      CREATE INDEX idx_email_verifications_tenant ON email_verifications (tenant_id);
+    `,
+  },
 ];
+
+const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
 /** 企業IDに使えない語（URL・運用で使うもの） */
 const RESERVED = new Set(["admin", "api", "app", "www", "login", "signup", "support", "help", "status", "billing", "static", "assets", "demo", "test", "root", "system", "kintai"]);
@@ -104,6 +126,7 @@ const toTenant = (r: TenantRow): Tenant => ({
   status: r.status,
   trialEndsAt: r.trial_ends_at,
   adminEmail: r.admin_email,
+  adminEmailVerifiedAt: r.admin_email_verified_at ?? undefined,
   stripeCustomerId: r.stripe_customer_id ?? undefined,
   stripeSubscriptionId: r.stripe_subscription_id ?? undefined,
   stripeItemId: r.stripe_item_id ?? undefined,
@@ -157,14 +180,17 @@ export class TenantManager {
   }
 
   /** 会社を作る。企業IDの重複は例外（UNIQUE 制約）になる */
-  create(input: { code: string; name: string; adminEmail: string; tz?: string; nowMs: number; termsVersion?: string; trialDays?: number }): Tenant {
+  create(input: { code: string; name: string; adminEmail: string; tz?: string; nowMs: number; termsVersion?: string; trialDays?: number; emailVerified?: boolean }): Tenant {
     const id = randomBytes(8).toString("hex");
     const trialDays = input.trialDays ?? PLAN.trialDays;
     this.control
       .prepare(
-        "INSERT INTO tenants (id, code, name, tz, status, trial_ends_at, admin_email, terms_version, terms_accepted_at, created_at) VALUES (?, ?, ?, ?, 'trialing', ?, ?, ?, ?, ?)",
+        "INSERT INTO tenants (id, code, name, tz, status, trial_ends_at, admin_email, admin_email_verified_at, terms_version, terms_accepted_at, created_at) VALUES (?, ?, ?, ?, 'trialing', ?, ?, ?, ?, ?, ?)",
       )
-      .run(id, input.code, input.name, input.tz ?? "Asia/Tokyo", input.nowMs + trialDays * 86400_000, input.adminEmail, input.termsVersion ?? null, input.termsVersion ? input.nowMs : null, input.nowMs);
+      .run(
+        id, input.code, input.name, input.tz ?? "Asia/Tokyo", input.nowMs + trialDays * 86400_000, input.adminEmail,
+        input.emailVerified ? input.nowMs : null, input.termsVersion ?? null, input.termsVersion ? input.nowMs : null, input.nowMs,
+      );
     return this.findById(id)!;
   }
 
@@ -208,7 +234,46 @@ export class TenantManager {
   }
 
   delete(id: string): void {
+    this.control.prepare("DELETE FROM email_verifications WHERE tenant_id = ?").run(id);
     this.control.prepare("DELETE FROM tenants WHERE id = ?").run(id);
+  }
+
+  /**
+   * 管理者のメールアドレスの確認用トークンを発行する（平文はここで返すだけで、保存するのはハッシュのみ）。
+   * 発行済みの未使用トークンはすべて無効になる（最新のメールのリンクだけが使える）。
+   */
+  issueEmailVerification(tenantId: string, email: string, nowMs: number, ttlMs: number): string {
+    const token = randomBytes(32).toString("base64url");
+    this.control.prepare("DELETE FROM email_verifications WHERE tenant_id = ? AND used_at IS NULL").run(tenantId);
+    this.control.prepare("INSERT INTO email_verifications (token_hash, tenant_id, email, expires_at) VALUES (?, ?, ?, ?)").run(sha256(token), tenantId, email, nowMs + ttlMs);
+    return token;
+  }
+
+  /**
+   * トークンでメールアドレスを確認済みにする。会社を返す（無効・期限切れ・メールアドレス変更後なら undefined）。
+   * 同じリンクをもう一度開いた場合も、確認済みならそのまま成功として扱う。
+   */
+  confirmEmail(tenantId: string, token: string, nowMs: number): Tenant | undefined {
+    const row = this.control.prepare("SELECT tenant_id, email, expires_at, used_at FROM email_verifications WHERE token_hash = ?").get(sha256(token)) as
+      | { tenant_id: string; email: string; expires_at: number; used_at: number | null }
+      | undefined;
+    const t = this.findById(tenantId);
+    if (!row || !t || row.tenant_id !== t.id || row.email !== t.adminEmail) return undefined;
+    if (row.used_at !== null) return t.adminEmailVerifiedAt ? t : undefined;
+    if (row.expires_at < nowMs) return undefined;
+    this.control.prepare("UPDATE email_verifications SET used_at = ? WHERE token_hash = ? AND used_at IS NULL").run(nowMs, sha256(token));
+    this.control.prepare("UPDATE tenants SET admin_email_verified_at = ? WHERE id = ?").run(nowMs, t.id);
+    return this.findById(t.id);
+  }
+
+  /** 管理者のメールアドレスを変更する。確認済みの状態は解除される */
+  changeAdminEmail(tenantId: string, email: string): void {
+    this.control.prepare("UPDATE tenants SET admin_email = ?, admin_email_verified_at = NULL WHERE id = ?").run(email, tenantId);
+  }
+
+  /** 期限切れ・使用済みの確認トークンを消す */
+  cleanEmailVerifications(nowMs: number, graceMs: number): number {
+    return Number(this.control.prepare("DELETE FROM email_verifications WHERE expires_at < ?").run(nowMs - graceMs).changes);
   }
 
   /** テナントの DB。初回に開くとき、マイグレーションと祝日データの同期を行う */

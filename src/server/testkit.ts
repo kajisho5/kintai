@@ -48,7 +48,7 @@ export function setup(opts: { nowMin: number; at: string; seedDemoCompany?: bool
   const appUrl = opts.appUrl === null ? undefined : (opts.appUrl ?? APP_URL);
   const app = createApp({ manager, clockFor: () => clock, config: { secureCookie: false, sessionHours: 12 }, mailer, billing, appUrl });
 
-  const tenant = manager.create({ code: "demo", name: "デモ商事株式会社", adminEmail: "admin@example.com", nowMs: clock.now().ts });
+  const tenant = manager.create({ code: "demo", name: "デモ商事株式会社", adminEmail: "admin@example.com", nowMs: clock.now().ts, emailVerified: true });
   manager.update(tenant.id, { status: "active" });
   const db = manager.db(tenant.id);
   if (opts.seedDemoCompany !== false) seedDemo(db, { today: TODAY, nowMin: opts.nowMin, password: PASSWORD });

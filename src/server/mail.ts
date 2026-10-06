@@ -56,12 +56,17 @@ export function mailerFromEnv(env: NodeJS.ProcessEnv): Mailer {
 const sign = `\n--\n${BRAND.name}（${BRAND.tagline}）\n${BRAND.operator.name}\nお問い合わせ: ${BRAND.operator.email}\n`;
 
 export const templates = {
-  welcome(p: { adminName: string; companyName: string; code: string; loginUrl: string; trialDays: number }): Pick<Mail, "subject" | "text"> {
+  welcome(p: { adminName: string; companyName: string; code: string; loginUrl: string; verifyUrl: string; trialDays: number; hours: number }): Pick<Mail, "subject" | "text"> {
     return {
-      subject: `【${BRAND.name}】ご登録ありがとうございます`,
+      subject: `【${BRAND.name}】ご登録ありがとうございます（メールアドレスの確認）`,
       text: `${p.adminName} 様
 
 ${BRAND.name} にご登録いただきありがとうございます。${p.companyName}の無料トライアル（${p.trialDays}日間）を開始しました。
+
+まず、メールアドレスの確認をお願いします。次のリンクを開いてください（${p.hours}時間有効）。
+${p.verifyUrl}
+
+確認が済むまでも、トライアルはそのままお使いいただけます（お申し込みや、一部のご案内メールは確認後になります）。
 
 ログイン情報
   企業ID: ${p.code}
@@ -71,6 +76,21 @@ ${BRAND.name} にご登録いただきありがとうございます。${p.compa
   1. 「社員管理」から社員を追加します（CSVでまとめて取り込めます）
   2. 「会社設定」で、特別条項の有無や会社の休日を確認します
   3. 社員に一時パスワードを伝え、打刻を始めます
+
+このメールに心当たりがない場合は、何もせずに破棄してください。
+${sign}`,
+    };
+  },
+
+  verifyEmail(p: { adminName: string; verifyUrl: string; hours: number }): Pick<Mail, "subject" | "text"> {
+    return {
+      subject: `【${BRAND.name}】メールアドレスの確認`,
+      text: `${p.adminName} 様
+
+次のリンクを開いて、メールアドレスの確認を完了してください（${p.hours}時間有効）。
+${p.verifyUrl}
+
+このメールに心当たりがない場合は、何もせずに破棄してください。
 ${sign}`,
     };
   },

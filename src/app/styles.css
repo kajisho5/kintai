@@ -1788,6 +1788,27 @@ code.pw {
   color: #8d1a2b;
 }
 
+.banner.verify {
+  flex-wrap: wrap;
+  font-weight: 500;
+}
+
+.banner.verify > span:first-child {
+  flex: 1 1 320px;
+}
+
+.verify-actions,
+.verify-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.verify-edit .field {
+  min-width: 240px;
+}
+
 @media (max-width: 880px) {
   .nav {
     overflow-x: auto;
