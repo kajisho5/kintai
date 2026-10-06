@@ -83,6 +83,8 @@ export interface CompanySettings {
   closingDay: number;
   /** 位置情報による打刻場所の確認 */
   geoMode: "off" | "record" | "enforce";
+  /** 管理者に二段階認証を必須にする */
+  require2fa: boolean;
 }
 
 const intIn = (v: string, lo: number, hi: number, fallback: number): number => {
@@ -106,6 +108,7 @@ export function loadSettings(db: Db): CompanySettings {
     flexCoreEnd: core ? Number(coreE) : null,
     rounding: getSetting(db, "rounding", "none") === "month30" ? "month30" : "none",
     closingDay: intIn(getSetting(db, "closing_day", "0"), 0, 28, 0),
+    require2fa: getSetting(db, "require_2fa", "0") === "1",
     geoMode: ((v) => (v === "record" || v === "enforce" ? v : "off"))(getSetting(db, "geo_mode", "off")),
   };
 }

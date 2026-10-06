@@ -19,6 +19,7 @@
   "devDependencies": {
     "@types/node": "^26.6.4",
     "@types/nodemailer": "^8.0.2",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
@@ -37,6 +38,7 @@
     "hono": "^4.13.13",
     "lucide-react": "^1.52.0",
     "nodemailer": "^10.0.15",
+    "qrcode": "^1.5.4",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "stripe": "^23.0.0",

@@ -43,6 +43,7 @@ function GeneralPanel({ s, onSaved }: { s: SettingsResponse; onSaved: () => void
   const [name, setName] = useState(s.company.name);
   const [special, setSpecial] = useState(s.specialClause);
   const [fy, setFy] = useState(s.fyStartMonth);
+  const [req2fa, setReq2fa] = useState(s.require2fa);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -51,7 +52,7 @@ function GeneralPanel({ s, onSaved }: { s: SettingsResponse; onSaved: () => void
     setBusy(true);
     setMsg("");
     try {
-      await api("/api/settings", { method: "PATCH", body: { name, specialClause: special, fyStartMonth: fy } });
+      await api("/api/settings", { method: "PATCH", body: { name, specialClause: special, fyStartMonth: fy, require2fa: req2fa } });
       setMsg("保存しました");
       onSaved();
     } catch (err) {
@@ -71,6 +72,13 @@ function GeneralPanel({ s, onSaved }: { s: SettingsResponse; onSaved: () => void
           <span>
             <b>特別条項付きの36協定を締結している</b>
             <small className="hint">オンにすると、月45時間を超えても直ちに違反とせず、特別条項の適用回数（年6回まで）と年720時間で判定します。オフの場合は月45時間・年360時間を上限として判定します。</small>
+          </span>
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={req2fa} onChange={(e) => setReq2fa(e.target.checked)} />
+          <span>
+            <b>管理者に二段階認証を必須にする</b>
+            <small className="hint">オンにすると、二段階認証を設定していない管理者は、設定が済むまで他の操作ができません。社員全員の勤怠・個人情報を扱うため、オンにすることをおすすめします。一般の社員は対象外です（本人が任意で設定できます）。</small>
           </span>
         </label>
         <label>

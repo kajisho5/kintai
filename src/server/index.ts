@@ -30,6 +30,7 @@ const clockFor = (tz: string): Clock => {
 const mailer = mailerFromEnv(process.env);
 const billing = billingFromEnv(process.env);
 // メール内のリンクと決済後の戻り先に使う公開URL。Host ヘッダは偽装できるため使わない
+if (process.env.NODE_ENV === "production" && !process.env.SECRET_KEY) console.warn("警告: SECRET_KEY が未設定です。二段階認証の秘密鍵が暗号化されずに保存されます");
 const appUrl = process.env.APP_URL?.replace(/\/$/, "");
 if (!appUrl) console.warn("注意: APP_URL が未設定です。登録・パスワード再設定などのメールは送られません");
 

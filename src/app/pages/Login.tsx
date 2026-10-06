@@ -15,6 +15,8 @@ export function Login({ onLogin }: { onLogin: () => void }) {
   const [company, setCompany] = useState(savedCompany);
   const [id, setId] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [needCode, setNeedCode] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -23,7 +25,13 @@ export function Login({ onLogin }: { onLogin: () => void }) {
     setBusy(true);
     setError("");
     try {
-      await api("/api/auth/login", { method: "POST", body: { company: company.trim(), id: id.trim(), password } });
+      const r = await api<{ ok: boolean; totpRequired?: boolean }>("/api/auth/login", { method: "POST", body: { company: company.trim(), id: id.trim(), password, ...(needCode ? { code } : {}) } });
+      if (!r.ok && r.totpRequired) {
+        // パスワードは合っている。二段階認証の確認コードの入力へ
+        setNeedCode(true);
+        setBusy(false);
+        return;
+      }
       try {
         localStorage.setItem("company", company.trim().toLowerCase());
       } catch {
@@ -54,10 +62,17 @@ export function Login({ onLogin }: { onLogin: () => void }) {
         </label>
         <label>
           パスワード
-          <input className="field" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
+          <input className="field" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required disabled={needCode} />
         </label>
+        {needCode ? (
+          <label>
+            確認コード（認証アプリの6桁）
+            <input className="field" inputMode="text" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} maxLength={20} autoFocus required style={{ fontSize: 20, letterSpacing: 3 }} />
+            <small className="hint">スマートフォンを使えないときは、回復コードを入力できます（1回限り）。</small>
+          </label>
+        ) : null}
         <div className="form-error" role="alert">{error}</div>
-        <button className="btn primary" type="submit" disabled={busy || !company || !id || !password}>
+        <button className="btn primary" type="submit" disabled={busy || !company || !id || !password || (needCode && !code.trim())}>
           {busy ? "確認しています…" : "ログイン"}
         </button>
         <p className="note" style={{ margin: 0 }}><a href="#/forgot">パスワードをお忘れの方</a></p>

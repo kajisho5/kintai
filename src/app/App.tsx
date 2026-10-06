@@ -1,11 +1,12 @@
 import { useState, type FormEvent } from "react";
-import { CalendarCheck, CalendarRange, ClipboardCheck, Clock3, ScrollText, KeyRound, CreditCard, LayoutGrid, LogOut, Settings as SettingsIcon, Table2, Users } from "lucide-react";
+import { CalendarCheck, CalendarRange, ClipboardCheck, Clock3, ScrollText, ShieldCheck, KeyRound, CreditCard, LayoutGrid, LogOut, Settings as SettingsIcon, Table2, Users } from "lucide-react";
 import { BRAND } from "../brand";
 import { SessionProvider, useSession } from "./session";
 import { useHashRoute } from "./ui/hooks";
 import { Avatar } from "./ui/kit";
 import { BrandMark } from "./ui/BrandMark";
 import { PasswordDialog } from "./ui/PasswordDialog";
+import { TwoFactorDialog } from "./ui/TwoFactorDialog";
 import { api } from "./api";
 import { Audit } from "./pages/Audit";
 import { Approvals } from "./pages/Approvals";
@@ -91,6 +92,7 @@ function Shell() {
   const [route, go] = useHashRoute();
   const [ym, setYm] = useState(() => defaultYm(me.currentYm));
   const [pwOpen, setPwOpen] = useState(false);
+  const [tfOpen, setTfOpen] = useState(false);
   const myId = me.employee.id;
 
   const nav = isAdmin
@@ -160,6 +162,7 @@ function Shell() {
             <small>{isAdmin ? "管理者" : me.employee.dept}</small>
           </div>
           <button type="button" className="btn sm text" onClick={() => setPwOpen(true)} aria-label="パスワードを変更" title="パスワードを変更"><KeyRound size={16} /></button>
+          <button type="button" className="btn sm text" onClick={() => setTfOpen(true)} aria-label="二段階認証" title="二段階認証"><ShieldCheck size={16} /></button>
           <button type="button" className="btn sm text" onClick={() => void logout()} aria-label="ログアウト" title="ログアウト"><LogOut size={16} /></button>
         </div>
       </aside>
@@ -168,12 +171,14 @@ function Shell() {
         <EmailVerifyBanner />
         <div className="mobile-logout">
           <button type="button" className="btn sm text" onClick={() => setPwOpen(true)}><KeyRound size={14} />パスワード変更</button>
+          <button type="button" className="btn sm text" onClick={() => setTfOpen(true)}><ShieldCheck size={14} />二段階認証</button>
           <button type="button" className="btn sm text" onClick={() => void logout()}><LogOut size={14} />ログアウト</button>
         </div>
         {/* 一時パスワードのままでは API が使えないため、変更が済むまで本体は表示しない */}
-        {me.mustChangePassword ? null : page}
+        {me.mustChangePassword || me.twoFactor.mustSetup ? null : page}
       </main>
       <PasswordDialog open={pwOpen || me.mustChangePassword} required={me.mustChangePassword} onClose={() => setPwOpen(false)} onChanged={refresh} />
+      <TwoFactorDialog open={tfOpen || (me.twoFactor.mustSetup && !me.mustChangePassword)} required={me.twoFactor.mustSetup} onClose={() => { setTfOpen(false); refresh(); }} onChanged={refresh} />
     </div>
   );
 }

@@ -14,6 +14,7 @@ import type { Clock } from "../clock";
 import type { BillingGateway } from "../billing";
 import { templates, type Mailer } from "../mail";
 import { PLAN } from "../plans";
+import { checkSecondFactor, hasTotp } from "./twofactor";
 
 export const TERMS_VERSION = "draft-1";
 
@@ -75,6 +76,7 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
   const ipFails = new RateLimiter(20, 10 * 60_000);
   const signupLimit = new RateLimiter(10, 60 * 60_000);
   const checkLimit = new RateLimiter(60, 10 * 60_000);
+  const totpThrottle = new LoginThrottle(5, 5 * 60_000); // 二段階目のコードを5回間違えると、5分ロック
   const forgotIp = new RateLimiter(10, 10 * 60_000);
   // 同じ宛先への案内メールは、IPに関係なく1時間10通まで（メール爆弾の防止）。同じIPからは3通まで
   // （他人が先に申請を使い切って、本人が申請できなくなるのを防ぐため、宛先単位の上限は緩めに）
@@ -85,7 +87,7 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
 
   app.post("/api/auth/login", async (c) => {
     const body = parse(
-      z.object({ company: z.string().trim().toLowerCase().min(1).max(40), id: z.string().trim().min(1).max(50), password: z.string().min(1).max(200) }),
+      z.object({ company: z.string().trim().toLowerCase().min(1).max(40), id: z.string().trim().min(1).max(50), password: z.string().min(1).max(200), code: z.string().max(20).optional() }),
       await c.req.json().catch(() => null),
     );
     const now = clockFor("Asia/Tokyo").now().ts; // エポックミリ秒なのでタイムゾーンに依存しない
@@ -118,6 +120,19 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
     accountIpThrottle.success(`${key}|${ip}`);
     accountThrottle.success(key);
     ipFails.refund(ip, now);
+    // 二段階認証を設定している社員は、パスワードのあとに、確認コード（または回復コード）が必要
+    if (hasTotp(db, r.id)) {
+      if (!body.code) return c.json({ ok: false, totpRequired: true });
+      const tkey = `${tenant.id}|${r.id}`;
+      const lock = totpThrottle.lockedUntil(tkey, now);
+      if (lock) throw new ApiError(423, `確認コードの入力に続けて失敗したため、しばらくロックしています（あと${Math.ceil((lock - now) / 60000)}分）`);
+      if (!checkSecondFactor(db, r.id, body.code, now)) {
+        totpThrottle.failure(tkey, now);
+        audit(db, now, r.id, "login_totp_failed", { ip });
+        throw new ApiError(401, "確認コードが違います。認証アプリに表示されている6桁（または回復コード）を入力してください");
+      }
+      totpThrottle.success(tkey);
+    }
     const token = createSession(db, r.id, now, config.sessionHours * 3600_000);
     setSession(c, config, tenant.id, token);
     audit(db, now, r.id, "login", { ip });
@@ -297,6 +312,7 @@ export function accountRoutes({ config, manager, mailer, appUrl }: Deps): Hono<E
       nowMin: now.min,
       pending: me.role === "admin" ? pendingCount(db) : 0,
       mustChangePassword: !!me.mustChangePassword,
+      twoFactor: { enabled: hasTotp(db, me.id), mustSetup: me.role === "admin" && settings.require2fa && !hasTotp(db, me.id) },
       tenant: {
         code: tenant.code,
         name: tenant.name,

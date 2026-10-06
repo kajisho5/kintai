@@ -27,6 +27,7 @@ interface EmpRow {
   role: "admin" | "employee";
   work_style: WorkStyle;
   geo_exempt: number;
+  totp_enabled_at: number | null;
   punch_pin_hash: string | null;
   card_hash: string | null;
   email: string | null;
@@ -51,6 +52,7 @@ const toAdminView = (r: EmpRow): EmployeeAdmin => ({
   role: r.role,
   workStyle: r.work_style,
   geoExempt: r.geo_exempt === 1,
+  hasTotp: r.totp_enabled_at !== null,
   hasPin: r.punch_pin_hash !== null,
   hasCard: r.card_hash !== null,
   email: r.email ?? undefined,
@@ -429,6 +431,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
       flexStartMonth: s.flexStartMonth,
       yearlyStartMonth: s.yearlyStartMonth,
       rounding: s.rounding,
+      require2fa: s.require2fa,
       closingDay: s.closingDay,
       geoMode: s.geoMode,
       geoSites: (db.prepare("SELECT id, name, lat, lng, radius_m AS radiusM FROM geo_sites ORDER BY id").all() as unknown as SettingsResponse["geoSites"]),
@@ -459,6 +462,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
         yearlyStartMonth: z.number().int().min(1).max(12).optional(),
         rounding: z.enum(["none", "month30"]).optional(),
         geoMode: z.enum(["off", "record", "enforce"]).optional(),
+        require2fa: z.boolean().optional(),
         closingDay: z.number().int().min(0, "締め日は0（月末）〜28日で指定してください").max(28, "締め日は0（月末）〜28日で指定してください").optional(),
         /** コアタイム。両方を送る。null で「なし」にする */
         flexCore: z.union([z.object({ start: z.number().int().min(0).max(1439), end: z.number().int().min(1).max(1440) }), z.null()]).optional(),
@@ -474,6 +478,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     if (p.rounding !== undefined) put.run("rounding", p.rounding);
     if (p.closingDay !== undefined) put.run("closing_day", String(p.closingDay));
     if (p.geoMode !== undefined) put.run("geo_mode", p.geoMode);
+    if (p.require2fa !== undefined) put.run("require_2fa", p.require2fa ? "1" : "0");
     if (p.flexMonths !== undefined) put.run("flex_months", String(p.flexMonths));
     if (p.flexStartMonth !== undefined) put.run("flex_start_month", String(p.flexStartMonth));
     if (p.yearlyStartMonth !== undefined) put.run("yearly_start_month", String(p.yearlyStartMonth));
@@ -524,6 +529,19 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
       if (!/^(\d)\1{5}$/.test(pin)) return pin;
     }
   };
+
+  /** 二段階認証の解除（スマートフォンを失くして、回復コードも無い社員のため）。本人確認は、管理者が行う */
+  app.post("/api/employees/:id/2fa-reset", (c) => {
+    const admin = requireAdmin(c);
+    const db = c.get("db");
+    const cur = target(c);
+    if (cur.id === admin.id) throw new ApiError(400, "自分の二段階認証は、画面左下の盾のボタンから解除してください");
+    if (cur.totp_enabled_at === null) throw new ApiError(409, "二段階認証は設定されていません");
+    db.prepare("UPDATE employees SET totp_secret = NULL, totp_pending = NULL, totp_enabled_at = NULL, totp_last_step = 0, totp_recovery = NULL WHERE id = ?").run(cur.id);
+    db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(cur.id);
+    audit(db, c.get("clock").now().ts, admin.id, "totp_reset", { id: cur.id });
+    return c.json({ ok: true });
+  });
 
   app.post("/api/employees/:id/pin", async (c) => {
     const admin = requireAdmin(c);

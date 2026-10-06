@@ -11,6 +11,7 @@ import { backupAll } from "./ops";
  *   export <企業ID> <ファイル>      会社のデータをJSONに書き出す
  *   set-status <企業ID> <状態>     状態を変更（trialing|active|past_due|canceled|suspended）
  *   delete <企業ID> --yes         会社のデータを完全に削除（元に戻せません。先に backup / export を）
+ *   reset-2fa <企業ID> <社員ID>    社員の二段階認証を解除する（管理者がスマートフォンも回復コードも失った場合）
  *   migrate                      全社のDBを最新のスキーマにする
  */
 const dataDir = process.env.DATA_DIR ?? "data";
@@ -49,6 +50,17 @@ switch (cmd) {
     const file = positional[1] ?? fail("書き出し先のファイルを指定してください");
     writeFileSync(file, JSON.stringify(exportCompany(manager.db(t.id), t, Date.now()), null, 2));
     console.log(`${t.code} のデータを ${file} に書き出しました`);
+    break;
+  }
+  case "reset-2fa": {
+    const t = tenantOf(positional[0]);
+    const id = positional[1] ?? fail("社員IDを指定してください");
+    const db = manager.db(t.id);
+    const r = db.prepare("UPDATE employees SET totp_secret = NULL, totp_pending = NULL, totp_enabled_at = NULL, totp_last_step = 0, totp_recovery = NULL WHERE id = ? AND totp_enabled_at IS NOT NULL").run(id);
+    if (!r.changes) fail(`${t.code} の ${id} は、二段階認証を設定していないか、存在しません`);
+    db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(id);
+    db.prepare("INSERT INTO audit_log (at, actor, action, detail) VALUES (?, 'ops', 'totp_reset', ?)").run(Date.now(), JSON.stringify({ id, by: "ops" }));
+    console.log(`${t.code} の ${id} の二段階認証を解除しました（本人確認は、運営者が行ってください）`);
     break;
   }
   case "set-status": {

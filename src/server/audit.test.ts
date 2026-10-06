@@ -33,7 +33,7 @@ describe("操作記録（監査ログ）", () => {
     expect(((await get("?action=punch")).json as AuditResponse).rows.every((x) => x.action === "punch")).toBe(true);
     expect(((await get("?actor=e01")).json as AuditResponse).rows.every((x) => x.actor === "e01")).toBe(true);
     expect(((await get("?actor=e01&action=settings_update")).json as AuditResponse).rows).toEqual([]);
-    expect(((await get("?from=2026-10-07")).json as AuditResponse).rows).toEqual([]); // 今日は 10/6
+    expect(((await get("?from=2100-01-01")).json as AuditResponse).rows).toEqual([]); // 未来の日付から
     expect(((await get("?from=2026-10-06&to=2026-10-06")).json as AuditResponse).rows.length).toBeGreaterThan(0);
 
     const page1 = (await get("?limit=2")).json as AuditResponse;

@@ -7,12 +7,13 @@ import type { Clock } from "./clock";
 import { ApiError, COOKIE, type AppConfig, type Env } from "./context";
 import type { TenantManager } from "./control";
 import { accessOf } from "./plans";
-import { getEmployee } from "./repo";
+import { getEmployee, getSetting } from "./repo";
 import type { BillingGateway } from "./billing";
 import type { Mailer } from "./mail";
 import { adminRoutes } from "./routes/admin";
 import { billingRoutes, webhookRoutes } from "./routes/billing";
 import { accountRoutes, publicRoutes, type Deps } from "./routes/auth";
+import { hasTotp, twoFactorRoutes } from "./routes/twofactor";
 import { auditRoutes } from "./routes/audit";
 import { kioskAdminRoutes, kioskPublicRoutes } from "./routes/kiosk";
 import { scheduleRoutes } from "./routes/schedule";
@@ -36,6 +37,8 @@ export interface AppDeps {
 const ALWAYS_ALLOWED = [/^\/api\/auth\//, /^\/api\/billing\//]; // 解約・停止中でも、課金ページの操作（再申し込み）は許す
 /** パスワード変更前でも許す操作 */
 const BEFORE_PASSWORD_CHANGE = new Set(["/api/me", "/api/auth/password", "/api/auth/logout"]);
+/** 会社が管理者に二段階認証を必須にしているのに未設定のとき、設定が済むまで許す操作 */
+const BEFORE_TWO_FACTOR = new Set([...BEFORE_PASSWORD_CHANGE, "/api/auth/2fa", "/api/auth/2fa/setup", "/api/auth/2fa/enable"]);
 
 export function createApp(deps: AppDeps): Hono<Env> {
   const { manager, config } = deps;
@@ -118,6 +121,9 @@ export function createApp(deps: AppDeps): Hono<Env> {
     if (me.mustChangePassword && !BEFORE_PASSWORD_CHANGE.has(c.req.path)) {
       throw new ApiError(403, "パスワードを変更してください", "PASSWORD_CHANGE_REQUIRED");
     }
+    if (me.role === "admin" && !BEFORE_TWO_FACTOR.has(c.req.path) && getSetting(db, "require_2fa", "0") === "1" && !hasTotp(db, me.id)) {
+      throw new ApiError(403, "二段階認証の設定が必要です", "TWO_FACTOR_REQUIRED");
+    }
     const mutating = c.req.method !== "GET" && c.req.method !== "HEAD";
     if (mutating && !access.writable && !ALWAYS_ALLOWED.some((re) => re.test(c.req.path))) {
       throw new ApiError(
@@ -130,6 +136,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
   });
 
   app.route("/", accountRoutes(d));
+  app.route("/", twoFactorRoutes(d));
   app.route("/", workRoutes());
   app.route("/", scheduleRoutes());
   app.route("/", kioskAdminRoutes(d));

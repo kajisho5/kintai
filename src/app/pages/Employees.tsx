@@ -344,9 +344,16 @@ function TerminalDialog({ emp, onClose, onChanged }: { emp: EmployeeAdmin | null
   const id = emp ? encodeURIComponent(emp.id) : "";
 
   return (
-    <Modal open={emp !== null} onClose={close} title={emp ? `${emp.name}さんの共用端末用の設定` : ""}>
+    <Modal open={emp !== null} onClose={close} title={emp ? `${emp.name}さんの共用端末・認証の設定` : ""}>
       {emp ? (
         <div className="form">
+          {emp.hasTotp ? (
+            <section style={{ display: "grid", gap: 8 }}>
+              <b>二段階認証</b>
+              <p className="note" style={{ margin: 0 }}>設定済みです。スマートフォンを失くして、回復コードも無い場合は、本人確認のうえ解除してください（ログイン中の端末はログアウトされ、本人が再設定します）。</p>
+              <div><button type="button" className="btn" disabled={busy} onClick={() => void run(async () => { await api(`/api/employees/${id}/2fa-reset`, { method: "POST" }); }, "二段階認証を解除しました")}>二段階認証を解除する</button></div>
+            </section>
+          ) : null}
           <section style={{ display: "grid", gap: 8 }}>
             <b>暗証番号（6桁）</b>
             <p className="note" style={{ margin: 0 }}>共用端末で、社員IDと一緒に入力します。{emp.hasPin ? "発行済みです。忘れた場合は、再発行してください（前の番号は使えなくなります）。" : "まだ発行していません。"}</p>

@@ -180,6 +180,18 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_audit_actor ON audit_log (actor, id);
     `,
   },
+  {
+    id: 8,
+    name: "two_factor",
+    sql: `
+      -- 二段階認証（TOTP）。totp_secret は暗号化した秘密鍵。totp_pending は設定の途中（まだ有効でない）の秘密鍵
+      ALTER TABLE employees ADD COLUMN totp_secret TEXT;
+      ALTER TABLE employees ADD COLUMN totp_pending TEXT;
+      ALTER TABLE employees ADD COLUMN totp_enabled_at INTEGER;
+      ALTER TABLE employees ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE employees ADD COLUMN totp_recovery TEXT;
+    `,
+  },
 ];
 
 export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): number[] {

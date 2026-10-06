@@ -20,6 +20,8 @@ export interface MeResponse {
   pending: number;
   /** 管理者が発行した一時パスワードのまま。変更するまで他の操作はできない */
   mustChangePassword: boolean;
+  /** 二段階認証の状況。mustSetup のとき（会社が管理者に必須としているのに未設定）、設定するまで他の操作はできない */
+  twoFactor: { enabled: boolean; mustSetup: boolean };
   tenant: {
     code: string;
     name: string;
@@ -189,6 +191,8 @@ export interface EmployeeAdmin {
   workStyle: WorkStyle;
   /** 位置情報による打刻場所の制限を受けない（在宅勤務・外回りなど） */
   geoExempt: boolean;
+  /** 二段階認証を設定済みか */
+  hasTotp: boolean;
   /** 共用端末で使う打刻用の暗証番号（PIN）を発行済みか */
   hasPin: boolean;
   /** 共用端末で使う ICカードを登録済みか */
@@ -261,6 +265,8 @@ export interface SettingsResponse {
   /** 位置情報による打刻場所の確認（off=しない / record=記録し、範囲外を知らせる / enforce=範囲外では打刻できない） */
   geoMode: "off" | "record" | "enforce";
   geoSites: GeoSite[];
+  /** 管理者に二段階認証を必須にする */
+  require2fa: boolean;
   /** 時間外・休日・深夜の月合計の端数処理（none=しない / month30=30分未満切捨・以上切上） */
   rounding: "none" | "month30";
   /** 勤怠の締め日（0 = 月末締め）。20 なら前月21日〜当月20日を当月分とする */
@@ -350,4 +356,11 @@ export interface AuditResponse {
   nextBefore?: number;
   /** 絞り込みに使える操作の一覧 */
   actions: { action: string; label: string }[];
+}
+
+export interface TwoFactorSetup {
+  /** 認証アプリに手入力する秘密鍵 */
+  secret: string;
+  /** QRコードにする otpauth:// のURI */
+  uri: string;
 }
