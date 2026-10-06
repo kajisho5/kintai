@@ -24,6 +24,8 @@ import {
   type Rounding,
   periodOfYm,
   roundMonthTotal,
+  WORK_STYLE_LABEL,
+  buildCsv,
   ymOfDate,
 } from "../../domain";
 import { ApiError, brief, parse, requireAdmin, type Env } from "../context";
@@ -210,6 +212,53 @@ app.get("/api/attendance", (c) => {
       })),
   };
   return c.json(body);
+});
+
+/**
+ * 給与計算用のCSV。kind=summary は社員ごとの月の集計、kind=detail は日別の明細。
+ * time=hm は「H:MM」、time=decimal は小数の時間（例 12.50）。給与ソフトごとの取り込み形式には合わせていないので、
+ * 取り込み側の項目に合わせて列を並べ替えて使う。
+ */
+app.get("/api/attendance/export", (c) => {
+  const { db, clock } = ctx(c);
+  requireAdmin(c);
+  const snap = snapshot(db, clock);
+  const ym = ymParam(c, snap);
+  const kind = c.req.query("kind") === "detail" ? "detail" : "summary";
+  const decimal = c.req.query("time") === "decimal";
+  const range = periodOfYm(ym, snap.settings.closingDay);
+  const t = (min: number): string => (decimal ? (Math.round((min / 60) * 100) / 100).toFixed(2) : `${Math.floor(Math.round(min) / 60)}:${String(Math.round(min) % 60).padStart(2, "0")}`);
+  const clockText = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.round(m % 60)).padStart(2, "0")}`;
+  const emps = snap.allEmployees.filter((e) => e.hired <= range.end && (!e.leftOn || e.leftOn >= range.start));
+  const rows: (string | number)[][] = [];
+  if (kind === "summary") {
+    rows.push(["社員ID", "氏名", "部署", "雇用区分", "勤務区分", "対象期間", "出勤日数", "有給日数", "欠勤日数", "要確認日数", "総労働時間", "法定内労働", "時間外労働", "うち週の超過", "うち期間の超過", "深夜労働", "法定休日労働"]);
+    for (const e of emps) {
+      const m = snap.ledger.monthOf(e, ym);
+      const x = monthSummary(m, snap.settings.rounding);
+      rows.push([e.id, e.name, e.dept, e.kind, WORK_STYLE_LABEL[e.workStyle], `${range.start}〜${range.end}`, x.workDays, x.leaveDays, x.absentDays, x.incompleteDays, t(x.workMin), t(x.legalInMin), t(x.overtimeMin), t(x.weeklyOvertimeMin), t(x.periodOvertimeMin), t(x.nightMin), t(x.holidayMin)]);
+    }
+  } else {
+    rows.push(["社員ID", "氏名", "日付", "曜日", "区分", "出勤", "退勤", "休憩(分)", "実働", "法定内", "時間外", "深夜", "法定休日", "備考"]);
+    for (const e of emps) {
+      for (const { plan: p, result: r } of snap.ledger.dayRows(e, ym)) {
+        if (p.kind === "off" && !p.note) continue;
+        const label = p.kind === "work" ? "出勤" : p.kind === "leave" ? (p.note ?? "有給休暇") : p.kind === "absent" ? "打刻なし" : p.kind === "incomplete" ? "要確認" : (p.note ?? "休み");
+        rows.push([
+          e.id, e.name, p.date, "日月火水木金土"[dowOf(p.date)]!, label,
+          p.start !== undefined ? clockText(p.start) : "", p.kind === "work" && p.end !== undefined ? clockText(p.end) : "",
+          p.breaks.reduce((s, b) => s + b.end - b.start, 0) || "",
+          r ? t(r.workMin) : "", r ? t(r.legalInMin) : "", r ? t(r.dailyOvertimeMin) : "", r ? t(r.nightMin) : "", r ? t(r.legalHolidayMin) : "",
+          p.kind === "work" && p.note ? p.note : p.kind !== "work" && p.kind !== "off" ? (p.note ?? "") : "",
+        ]);
+      }
+    }
+  }
+  const name = kind === "summary" ? "勤怠集計" : "勤怠明細";
+  return c.body(buildCsv(rows), 200, {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="attendance-${kind}-${ym}.csv"; filename*=UTF-8''${encodeURIComponent(`${name}_${ym}.csv`)}`,
+  });
 });
 
 app.get("/api/attendance/:id", (c) => {

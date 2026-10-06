@@ -6,6 +6,7 @@ import { datesBetween, dowOf } from "../../domain/calendar";
 import { WORK_STYLE_LABEL, type DayPlan } from "../../domain/types";
 import { WD, clock, csvDownload, dur, durOrDash, hours1, shortDate, ymLabel } from "../format";
 import { useSession } from "../session";
+import { Modal } from "../ui/Modal";
 import { Empty, Figure, Gauge, MonthPicker, Pill, RiskPill, Who } from "../ui/kit";
 
 const RISK_ORDER = { ok: 0, warning: 1, violation: 2 } as const;
@@ -67,14 +68,7 @@ export function Attendance({ go, ym, setYm }: { go: (to: string) => void; ym: st
     </th>
   );
 
-  const exportCsv = () =>
-    csvDownload(`勤怠一覧_${ym}.csv`, [
-      ["社員番号", "氏名", "部署", "出勤日数", "総労働(分)", "法定内(分)", "法定時間外(分)", "深夜(分)", "法定休日(分)", "有給日数", "未打刻日数", "36協定判定"],
-      ...shown.map(({ emp, month: m, risk }) => [
-        emp.id, emp.name, emp.dept, m.workDays, m.workMin, m.legalInMin, m.overtimeMin, m.nightMin, m.holidayMin, m.leaveDays, m.absentDays + m.incompleteDays,
-        risk.level === "ok" ? "良好" : risk.level === "warning" ? "注意" : "違反の恐れ",
-      ]),
-    ]);
+  const [exporting, setExporting] = useState(false);
 
   return (
     <>
@@ -96,9 +90,10 @@ export function Attendance({ go, ym, setYm }: { go: (to: string) => void; ym: st
             <Search size={16} />
             <input className="field" placeholder="氏名で検索" value={q} onChange={(e) => setQ(e.target.value)} aria-label="氏名で検索" />
           </label>
-          <button type="button" className="btn" onClick={exportCsv}><Download size={16} />CSV出力</button>
+          <button type="button" className="btn" onClick={() => setExporting(true)}><Download size={16} />給与用CSV</button>
         </div>
       </header>
+      <ExportDialog open={exporting} ym={ym} onClose={() => setExporting(false)} />
 
       <div className={`stack ${loading ? "dim" : ""}`} aria-busy={loading}>
         <section className="figures" aria-label="月次サマリー">
@@ -316,6 +311,37 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
         </p>
       </div>
     </>
+  );
+}
+
+/** 全社員ぶんの月次CSV（給与計算用） */
+function ExportDialog({ open, ym, onClose }: { open: boolean; ym: string; onClose: () => void }) {
+  const [kind, setKind] = useState<"summary" | "detail">("summary");
+  const [time, setTime] = useState<"hm" | "decimal">("hm");
+  return (
+    <Modal open={open} onClose={onClose} title={`${ymLabel(ym)}の勤怠CSV（全社員）`}>
+      <div className="form">
+        <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+          <legend style={{ fontWeight: 700, color: "var(--ink-2)", padding: 0, marginBottom: 5 }}>内容</legend>
+          <div className="radio-row">
+            <label><input type="radio" name="ek" checked={kind === "summary"} onChange={() => setKind("summary")} />社員ごとの月次集計</label>
+            <label><input type="radio" name="ek" checked={kind === "detail"} onChange={() => setKind("detail")} />日別の明細</label>
+          </div>
+        </fieldset>
+        <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+          <legend style={{ fontWeight: 700, color: "var(--ink-2)", padding: 0, marginBottom: 5 }}>時間の表記</legend>
+          <div className="radio-row">
+            <label><input type="radio" name="et" checked={time === "hm"} onChange={() => setTime("hm")} />時:分（例 12:30）</label>
+            <label><input type="radio" name="et" checked={time === "decimal"} onChange={() => setTime("decimal")} />小数の時間（例 12.50）</label>
+          </div>
+        </fieldset>
+        <p className="note" style={{ margin: 0 }}>給与ソフトごとの取り込み形式には合わせていません。取り込み側の項目に合わせて、列を並べ替えて使ってください。月合計の端数処理は、会社設定に従います。</p>
+        <div className="actions">
+          <button type="button" className="btn" onClick={onClose}>閉じる</button>
+          <a className="btn primary" href={`/api/attendance/export?ym=${ym}&kind=${kind}&time=${time}`} download onClick={() => setTimeout(onClose, 300)}><Download size={16} />ダウンロード</a>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

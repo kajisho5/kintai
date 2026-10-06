@@ -39,19 +39,8 @@ export const ymLabel = (ym: string): string => {
   return `${y}年${m}月`;
 };
 
-/**
- * CSV の1セル分。カンマ・引用符・改行は引用符で囲む。
- * 先頭が = + - @ やタブ・改行の文字列は、Excel で数式として実行されないよう ' を付ける
- * （氏名などに悪意のある値が入っていても、開いた人のPCで動かないようにする）。
- */
-export function csvCell(v: string | number): string {
-  let s = String(v);
-  if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-/** Excel で文字化けしないよう BOM を付けた CSV 文字列 */
-export const buildCsv = (rows: (string | number)[][]): string => "\uFEFF" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
+export { buildCsv, csvCell } from "../domain/format";
+import { buildCsv } from "../domain/format";
 
 export function csvDownload(filename: string, rows: (string | number)[][]): void {
   const url = URL.createObjectURL(new Blob([buildCsv(rows)], { type: "text/csv;charset=utf-8" }));

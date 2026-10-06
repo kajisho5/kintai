@@ -194,3 +194,49 @@ describe("締め日", () => {
     expect(((await t.call("GET", "/api/attendance/e01?ym=2026-10", { cookie: admin })).json as AttendanceDetailResponse).range).toEqual({ from: "2026-10-01", to: "2026-10-31" });
   });
 });
+
+describe("給与用CSV", () => {
+  const get = async (cookie: string, q: string) => {
+    const res = await t.app.request(`/api/attendance/export?${q}`, { headers: { cookie } });
+    // Response.text() は先頭の BOM を取り除くので、バイト列から BOM を残したまま読む
+    const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(new Uint8Array(await res.arrayBuffer()));
+    return { status: res.status, text, headers: res.headers };
+  };
+
+  it("社員ごとの月次集計。時:分と小数の時間を選べ、見出しとBOMが付く。管理者だけが取得できる", async () => {
+    const r = await get(admin, "ym=2026-10&kind=summary&time=hm");
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toContain("text/csv");
+    expect(r.headers.get("content-disposition")).toContain("attendance-summary-2026-10.csv");
+    expect(r.headers.get("content-disposition")).toContain(encodeURIComponent("勤怠集計_2026-10.csv"));
+    expect(r.text.startsWith("﻿社員ID,氏名,部署")).toBe(true);
+    const lines = r.text.split("\r\n");
+    expect(lines.length).toBe(1 + 18); // 見出し + 在籍18名
+    const e01 = lines.find((l) => l.startsWith("e01,"))!;
+    const c = e01.split(",");
+    expect(c[1]).toBe("佐藤 健太");
+    expect(c[10]).toMatch(/^\d+:\d\d$/); // 総労働時間
+    const dec = (await get(admin, "ym=2026-10&kind=summary&time=decimal")).text.split("\r\n").find((l) => l.startsWith("e01,"))!.split(",");
+    expect(dec[10]).toMatch(/^\d+\.\d\d$/);
+    const [h, m] = c[10]!.split(":").map(Number) as [number, number];
+    expect(Number(dec[10])).toBeCloseTo(h + m / 60, 1);
+    const emp = await t.login("e01");
+    expect((await get(emp, "ym=2026-10&kind=summary")).status).toBe(403);
+    expect((await get("", "ym=2026-10")).status).toBe(401);
+    expect((await get(admin, "ym=2019-01")).status).toBe(400);
+  });
+
+  it("日別の明細。夜勤の退勤は25:00のような時刻で、氏名の先頭が数式の文字でも無害化される", async () => {
+    t.db.prepare("UPDATE employees SET name = '=1+1' WHERE id = 'e02'").run();
+    t.db.prepare("DELETE FROM punch_events WHERE emp_id = 'e01'").run();
+    const ins = t.db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, created_at) VALUES ('e01', '2026-10-01', ?, ?, 1)");
+    ins.run("in", 1320);
+    ins.run("out", 1500);
+    const r = await get(admin, "ym=2026-10&kind=detail&time=hm");
+    const lines = r.text.split("\r\n");
+    expect(lines[0]).toContain("社員ID,氏名,日付,曜日,区分,出勤,退勤");
+    expect(lines.find((l) => l.startsWith("e01,佐藤 健太,2026-10-01,木,出勤,22:00,25:00"))).toBeTruthy();
+    expect(lines.some((l) => l.startsWith("e02,'=1+1,"))).toBe(true);
+    expect(lines.some((l) => l.startsWith("e02,=1+1"))).toBe(false);
+  });
+});
