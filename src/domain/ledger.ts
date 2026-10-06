@@ -91,24 +91,31 @@ function plannedBreakLen(baseMin: number): number {
   return baseMin >= 480 ? 60 : baseMin > 360 ? 45 : 0;
 }
 
+function nested<V>(m: Map<string, Map<string, V>>, id: string): Map<string, V> {
+  let x = m.get(id);
+  if (!x) m.set(id, (x = new Map()));
+  return x;
+}
+
 const NO_EVENTS = Object.freeze([]) as unknown as PunchEvent[];
 
 export class Ledger {
   /** 社員 → 日付 → 打刻（記録順） */
   private events = new Map<string, Map<string, PunchEvent[]>>();
   private leaves = new Map<string, Map<string, number>>();
-  private monthCache = new Map<string, MonthData>();
-  private riskCache = new Map<string, Risk>();
+  // 社員ごとの集計の使い回し（社員単位で捨てられるよう、社員 → キー の入れ子）
+  private monthCache = new Map<string, Map<string, MonthData>>();
+  private riskCache = new Map<string, Map<string, Risk>>();
   private schedules = new Map<string, ScheduleRow>();
   /** シフトを1件でも持つ社員（持たない社員は、法定休日の判定を曜日だけで済ませる） */
   private scheduled = new Set<string>();
   /** 社員×週（日曜始まり）ごとの、シフトで指定した法定休日（指定がなければ null） */
   private legalOfWeek = new Map<string, Set<string> | null>();
-  private periodCache = new Map<string, PeriodComputed>();
+  private periodCache = new Map<string, Map<string, PeriodComputed>>();
   private planCache = new Map<string, Map<string, DayPlan>>();
 
   constructor(
-    readonly cal: Calendar,
+    private cal: Calendar,
     events: PunchEvent[],
     leaves: LeaveRow[],
     private readonly opts: LedgerOptions,
@@ -147,6 +154,50 @@ export class Ledger {
 
   get today(): string {
     return this.cal.today;
+  }
+
+  get holidays(): Record<string, string> {
+    return this.cal.holidays;
+  }
+
+  /**
+   * 読み込み後に増えた打刻（記録順で、すでにある打刻より後のもの）を加える。影響のある社員の集計だけを捨てる。
+   * 本日以降の日付の打刻は、月・期間・リスクの集計に入らない（集計は前日まで）ので、その日の予定・実績だけを捨てる。
+   */
+  addEvents(added: PunchEvent[]): void {
+    const dirty = new Set<string>();
+    for (const e of added) {
+      let byDate = this.events.get(e.empId);
+      if (!byDate) this.events.set(e.empId, (byDate = new Map()));
+      let list = byDate.get(e.date);
+      if (!list) byDate.set(e.date, (list = []));
+      list.push(e);
+      this.planCache.get(e.empId)?.delete(e.date);
+      if (e.date < this.cal.today) dirty.add(e.empId);
+    }
+    for (const id of dirty) this.dropAggregates(id);
+  }
+
+  /** 時刻だけが進んだとき。集計に時刻が影響するのは、前日から続く（退勤の無い）勤務の「勤務中」の注記だけ */
+  advance(nowMin: number): void {
+    if (this.cal.nowMin === nowMin) return;
+    this.cal = { ...this.cal, nowMin };
+    const yesterday = addDays(this.cal.today, -1);
+    for (const [id, byDate] of this.events) {
+      const list = byDate.get(yesterday);
+      if (!list) continue;
+      const d = deriveDay(list);
+      if (d.in !== undefined && d.out === undefined) {
+        this.planCache.get(id)?.delete(yesterday);
+        this.dropAggregates(id);
+      }
+    }
+  }
+
+  private dropAggregates(empId: string): void {
+    this.monthCache.delete(empId);
+    this.riskCache.delete(empId);
+    this.periodCache.delete(empId);
   }
 
   private get closing(): number {
@@ -301,8 +352,7 @@ export class Ledger {
 
   /** 当月は前日までを集計対象にする（本日分は打刻中のため含めない） */
   monthOf(emp: Employee, ym: string): MonthData {
-    const key = `${emp.id}|${ym}`;
-    const hit = this.monthCache.get(key);
+    const hit = this.monthCache.get(emp.id)?.get(ym);
     if (hit) return hit;
     const plans = datesOfPeriod(ym, this.closing)
       .filter((d) => d < this.cal.today && d >= emp.hired && (!emp.leftOn || d <= emp.leftOn))
@@ -342,7 +392,7 @@ export class Ledger {
       absentDays: plans.filter((p) => p.kind === "absent").length,
       incompleteDays: plans.filter((p) => p.kind === "incomplete").length,
     };
-    this.monthCache.set(key, data);
+    nested(this.monthCache, emp.id).set(ym, data);
     return data;
   }
 
@@ -406,8 +456,8 @@ export class Ledger {
   }
 
   private periodComputed(emp: Employee, per: { start: string; end: string }): PeriodComputed {
-    const key = `${emp.id}|${emp.workStyle}|${per.start}`;
-    const hit = this.periodCache.get(key);
+    const key = `${emp.workStyle}|${per.start}`;
+    const hit = this.periodCache.get(emp.id)?.get(key);
     if (hit) return hit;
     // 入社日より前・退職日より後は、期間に含めない（総枠は在籍した日数で按分される）
     // （通常の勤務は、週の判定のため、在籍前後の日も含める。その日に勤務の実績はない）
@@ -418,7 +468,7 @@ export class Ledger {
     const result = this.computePeriod(emp, dates.map((d) => this.periodInput(emp, d)));
     const byDate = new Map(dates.map((d, i) => [d, result.days[i]!]));
     const comp: PeriodComputed = { per, dates, result, byDate };
-    this.periodCache.set(key, comp);
+    nested(this.periodCache, emp.id).set(key, comp);
     return comp;
   }
 
@@ -509,8 +559,7 @@ export class Ledger {
   }
 
   riskOf(emp: Employee, ym: string = this.currentYm): Risk {
-    const key = `${emp.id}|${ym}`;
-    const hit = this.riskCache.get(key);
+    const hit = this.riskCache.get(emp.id)?.get(ym);
     if (hit) return hit;
     const months = monthsBetween(fiscalStartYm(`${ym}-01`, this.opts.fiscalStartMonth), ym);
     const outlook = this.outlookOf(emp, ym, months);
@@ -530,7 +579,7 @@ export class Ledger {
       over45Count: history.filter((m) => m.overtimeMin > limits.monthMin).length,
       outlook,
     };
-    this.riskCache.set(key, risk);
+    nested(this.riskCache, emp.id).set(ym, risk);
     return risk;
   }
 

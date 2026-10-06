@@ -97,4 +97,12 @@ describe("snapshot の使い回し", () => {
     ).toThrow("取り消し");
     expect(workMin(snapshot(db, t.clock, { only: ["e07"] }), "e07")).toBe(0);
   });
+
+  it("直前の月（前の協定期間の最終月）以外の backTo は、指定なしと同じ集計になる。直前の月なら、前の期間ぶんも読み込んだ別の集計", () => {
+    const { t, db } = prep();
+    const plain = snapshot(db, t.clock);
+    expect(snapshot(db, t.clock, { backTo: "2026-10" })).toBe(plain);
+    expect(snapshot(db, t.clock, { backTo: "2026-03" })).not.toBe(plain); // 4月始まりの年度の、直前の月
+    expect(snapshot(db, t.clock)).toBe(plain);
+  });
 });

@@ -192,6 +192,30 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE employees ADD COLUMN totp_recovery TEXT;
     `,
   },
+  {
+    id: 9,
+    name: "data_revisions",
+    sql: `
+      -- 集計（Ledger）の元になる表の変更回数。打刻以外の表が変わったら、集計を作り直す（打刻は、追記のみなので、増えた分だけを加える）
+      CREATE TABLE data_rev (name TEXT PRIMARY KEY, n INTEGER NOT NULL);
+      INSERT INTO data_rev (name, n) VALUES ('employees', 0), ('settings', 0), ('holidays', 0), ('schedules', 0), ('paid_leave', 0);
+      CREATE TRIGGER rev_employees_i AFTER INSERT ON employees BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'employees'; END;
+      CREATE TRIGGER rev_employees_u AFTER UPDATE OF name, dept, title, kind, role, work_style, geo_exempt, work_days, weekly_days, weekly_hours, base_min, sched_start, hired, carry, email, must_change_password, left_on, active ON employees BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'employees'; END;
+      CREATE TRIGGER rev_employees_d AFTER DELETE ON employees BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'employees'; END;
+      CREATE TRIGGER rev_settings_i AFTER INSERT ON settings BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'settings'; END;
+      CREATE TRIGGER rev_settings_u AFTER UPDATE ON settings BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'settings'; END;
+      CREATE TRIGGER rev_settings_d AFTER DELETE ON settings BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'settings'; END;
+      CREATE TRIGGER rev_holidays_i AFTER INSERT ON holidays BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'holidays'; END;
+      CREATE TRIGGER rev_holidays_u AFTER UPDATE ON holidays BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'holidays'; END;
+      CREATE TRIGGER rev_holidays_d AFTER DELETE ON holidays BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'holidays'; END;
+      CREATE TRIGGER rev_schedules_i AFTER INSERT ON schedules BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'schedules'; END;
+      CREATE TRIGGER rev_schedules_u AFTER UPDATE ON schedules BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'schedules'; END;
+      CREATE TRIGGER rev_schedules_d AFTER DELETE ON schedules BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'schedules'; END;
+      CREATE TRIGGER rev_paid_leave_i AFTER INSERT ON paid_leave BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'paid_leave'; END;
+      CREATE TRIGGER rev_paid_leave_u AFTER UPDATE ON paid_leave BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'paid_leave'; END;
+      CREATE TRIGGER rev_paid_leave_d AFTER DELETE ON paid_leave BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'paid_leave'; END;
+    `,
+  },
 ];
 
 export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): number[] {

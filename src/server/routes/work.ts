@@ -317,7 +317,7 @@ function validateNewRequest(db: Db, snap: Snapshot, me: Employee, req: NewReq): 
   if (req.date < addDays(today, -62) || req.date > addDays(today, 366)) throw new ApiError(400, "対象日は過去2か月〜1年先の範囲で指定してください");
   if (req.date < me.hired) throw new ApiError(400, "入社日より前の日付は指定できません");
   const w = dowOf(req.date);
-  const restDay = w === 0 || !!ledger.cal.holidays[req.date] || !me.workDays.includes(w);
+  const restDay = w === 0 || !!ledger.holidays[req.date] || !me.workDays.includes(w);
 
   if (req.kind === "残業申請" || req.kind === "休日出勤") {
     if (req.end <= req.start) throw new ApiError(400, "終了時刻は開始時刻より後にしてください");

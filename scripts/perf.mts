@@ -74,3 +74,21 @@ await time("/api/employees", "/api/employees");
 await time("export summary", "/api/attendance/export?ym=2026-09&kind=summary");
 await time("export detail", "/api/attendance/export?ym=2026-09&kind=detail", 2);
 await time("/api/schedules", "/api/schedules?ym=2026-10");
+
+// 運用中の想定: 打刻が入り、時刻が進んだあとに、管理者が画面を開く（差分だけを反映する）
+{
+  const ins = db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, created_at) VALUES (?, '2026-10-06', ?, ?, 1)");
+  let minute = 14 * 60;
+  const round = async (label: string, punches: number) => {
+    for (let i = 0; i < punches; i++) ins.run(`e${1 + Math.floor(Math.random() * (N - 1))}`, "in", 540);
+    minute++;
+    clock.set("2026-10-06", `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`);
+    await time(label, "/api/dashboard", 1);
+    await time(label.replace("dashboard", "attendance"), "/api/attendance?ym=2026-10", 1);
+  };
+  console.log("--- 打刻が入ったあとの再表示 ---");
+  await round("dashboard(打刻10件)", 10);
+  await round("dashboard(打刻50件)", 50);
+  await round("dashboard(打刻なし・1分経過)", 0);
+}
+console.log("heapUsed MB", (globalThis.gc?.(), (process.memoryUsage().heapUsed/1048576).toFixed(0)), "rss MB", (process.memoryUsage().rss/1048576).toFixed(0));

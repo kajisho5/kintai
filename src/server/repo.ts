@@ -140,13 +140,50 @@ export interface SnapshotOptions {
   only?: string[];
 }
 
-// 同じ状態（同じDB・同じ変更回数・同じ分）に対する集計は、短時間なら使い回す。
-// DBへの書き込みがあれば、変更回数が変わるので、使い回さない。
+// ---- 集計（Snapshot）の使い回し ----
+//
+// 1人分（only）と、前の協定期間の最終月（backTo）の集計は、同じDB・同じ変更回数・同じ分に対して、短時間なら使い回す。DBへの書き込みがあれば、変更回数が変わるので、使い回さない。
+// 全社員の集計は、作るのに時間がかかる（社員数 × 打刻の件数に比例）ので、作ったものを残しておき、変更があったときに差分だけを反映する:
+//  - 打刻は追記のみ（seq が増えていく）なので、前回より後の打刻だけを読み、影響のある社員の集計だけを捨てる
+//  - 社員・設定・祝日・シフト・有給が変わったとき（data_rev の変更回数で検知。トリガーが数える）、日付が変わったとき、
+//    ロールバックがあったとき（seq が巻き戻るため）、読み込んだ範囲より前の打刻が増えたときは、作り直す
+//  - 時刻だけが進んだときは、前日から続く勤務のある社員の集計だけを捨てる
 const dbIds = new WeakMap<Db, number>();
 let nextDbId = 1;
-const snapshotCache = new Map<string, { at: number; snap: Snapshot }>();
-const SNAPSHOT_CACHE_MAX = 12;
-const SNAPSHOT_CACHE_TTL_MS = 120_000;
+const dbId = (db: Db): number => {
+  let id = dbIds.get(db);
+  if (!id) dbIds.set(db, (id = nextDbId++));
+  return id;
+};
+const scopedCache = new Map<string, { at: number; snap: Snapshot; weight: number }>();
+/** 残しておく打刻の件数の合計の上限（前の協定期間の最終月の集計は、全社員ぶんなので大きい） */
+const SCOPED_MAX_WEIGHT = 1_000_000;
+const SCOPED_CACHE_MAX = 12;
+const SCOPED_CACHE_TTL_MS = 120_000;
+
+interface Live {
+  snap: Snapshot;
+  rev: string;
+  rollbacks: number;
+  date: string;
+  lastSeq: number;
+  /** 読み込んだ打刻の最初の日付と、打刻のある最初の日付 */
+  from: string;
+  dataFrom: string | undefined;
+  weight: number;
+}
+const liveCache = new Map<string, Live>();
+/** 作り直した回数と、差分だけを反映した回数（テスト・性能の確認用） */
+export const snapshotStats = { built: 0, incremental: 0 };
+/** 使い回さずに、毎回ゼロから集計を作る（テストで、差分の反映の結果を照合するために使う） */
+export const snapshotFresh = (db: Db, clock: Clock, opts: SnapshotOptions = {}): Snapshot => buildSnapshot(db, clock, opts).snap;
+/** 残しておく打刻の件数の合計の上限（メモリの目安。超えたら、使っていないものから捨てる） */
+const LIVE_MAX_WEIGHT = 2_000_000;
+
+const revOf = (db: Db): string =>
+  (db.prepare("SELECT name, n FROM data_rev ORDER BY name").all() as unknown as { name: string; n: number }[]).map((r) => `${r.name}:${r.n}`).join(",");
+const maxSeqOf = (db: Db): number => (db.prepare("SELECT MAX(seq) AS m FROM punch_events").get() as { m: number | null }).m ?? 0;
+const geoSiteCountOf = (db: Db): number => (db.prepare("SELECT COUNT(*) AS n FROM geo_sites").get() as { n: number }).n;
 
 /**
  * 現在の協定期間ぶんの打刻を読み込み、集計用の Ledger を作る。
@@ -155,21 +192,77 @@ const SNAPSHOT_CACHE_TTL_MS = 120_000;
  */
 export function snapshot(db: Db, clock: Clock, opts: SnapshotOptions = {}): Snapshot {
   const now = clock.now();
-  let id = dbIds.get(db);
-  if (!id) dbIds.set(db, (id = nextDbId++));
-  const changes = (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
-  const key = `${id}|${changes}|${rollbackCount(db)}|${now.date}|${Math.floor(now.min)}|${opts.backTo ?? ""}|${opts.only ? [...opts.only].sort().join(",") : "*"}`;
-  const t = Date.now();
-  const hit = snapshotCache.get(key);
-  if (hit && t - hit.at < SNAPSHOT_CACHE_TTL_MS) return hit.snap;
-  const snap = buildSnapshot(db, clock, opts);
-  snapshotCache.set(key, { at: t, snap });
-  for (const [k, v] of snapshotCache) if (t - v.at >= SNAPSHOT_CACHE_TTL_MS) snapshotCache.delete(k);
-  while (snapshotCache.size > SNAPSHOT_CACHE_MAX) snapshotCache.delete(snapshotCache.keys().next().value!);
-  return snap;
+  const id = dbId(db);
+  // backTo は、直前の月（前の協定期間の最終月）のときだけ意味がある。それ以外は、指定がないものとして扱う
+  if (opts.backTo && opts.backTo !== previousPeriodYm(db, now.date)) opts = { ...opts, backTo: undefined };
+  if (opts.only || opts.backTo) {
+    const changes = (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+    const key = `${id}|${changes}|${rollbackCount(db)}|${now.date}|${Math.floor(now.min)}|${opts.backTo ?? ""}|${opts.only ? [...opts.only].sort().join(",") : "*"}`;
+    const t = Date.now();
+    const hit = scopedCache.get(key);
+    if (hit && t - hit.at < SCOPED_CACHE_TTL_MS) return hit.snap;
+    const built = buildSnapshot(db, clock, opts);
+    const snap = built.snap;
+    scopedCache.set(key, { at: t, snap, weight: built.eventCount });
+    let total = 0;
+    for (const [k, v] of scopedCache) {
+      if (t - v.at >= SCOPED_CACHE_TTL_MS) scopedCache.delete(k);
+      else total += v.weight;
+    }
+    for (const [k, v] of scopedCache) {
+      if (scopedCache.size <= SCOPED_CACHE_MAX && total <= SCOPED_MAX_WEIGHT) break;
+      if (scopedCache.size <= 1) break;
+      scopedCache.delete(k);
+      total -= v.weight;
+    }
+    return snap;
+  }
+
+  const key = String(id);
+  const rev = revOf(db);
+  const rollbacks = rollbackCount(db);
+  const lastSeq = maxSeqOf(db);
+  const live = liveCache.get(key);
+  if (live && live.rev === rev && live.rollbacks === rollbacks && live.date === now.date && live.lastSeq <= lastSeq) {
+    liveCache.delete(key);
+    liveCache.set(key, live); // 使った順に並べ替える
+    if (live.lastSeq === lastSeq && live.snap.nowMin === now.min) return live.snap;
+    const added =
+      live.lastSeq === lastSeq
+        ? []
+        : (db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE seq > ? ORDER BY seq").all(live.lastSeq) as unknown as PunchEvent[]);
+    // 読み込んだ範囲より前の打刻（過去の日付の修正など）が増えたときは、作り直す
+    if (!added.some((e) => e.date < live.from || live.dataFrom === undefined || e.date < live.dataFrom)) {
+      live.snap.ledger.addEvents(added);
+      live.snap.ledger.advance(now.min);
+      live.lastSeq = lastSeq;
+      live.weight += added.length;
+      live.snap = { ...live.snap, nowMin: now.min, today: now.date, geoSiteCount: geoSiteCountOf(db) };
+      snapshotStats.incremental++;
+      return live.snap;
+    }
+  }
+  const built = buildSnapshot(db, clock, opts);
+  snapshotStats.built++;
+  liveCache.delete(key);
+  liveCache.set(key, { snap: built.snap, rev, rollbacks, date: now.date, lastSeq, from: built.from, dataFrom: built.dataFrom, weight: built.eventCount });
+  let total = 0;
+  for (const v of liveCache.values()) total += v.weight;
+  for (const [k, v] of liveCache) {
+    if (total <= LIVE_MAX_WEIGHT || liveCache.size <= 1) break;
+    liveCache.delete(k);
+    total -= v.weight;
+  }
+  return built.snap;
 }
 
-function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions): Snapshot {
+/** 今の協定期間の、直前の月 */
+function previousPeriodYm(db: Db, today: string): string {
+  const settings = loadSettings(db);
+  return addYm(fiscalStartYm(`${ymOfDate(today, settings.closingDay)}-01`, settings.fyStartMonth), -1);
+}
+
+function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions): { snap: Snapshot; from: string; dataFrom: string | undefined; eventCount: number } {
   const now = clock.now();
   const settings = loadSettings(db);
   const currentYm = ymOfDate(now.date, settings.closingDay);
@@ -219,5 +312,6 @@ function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions): Snapshot {
     workedDatesOf: (empId, f, t) => new Set((worked.all(empId, f, t) as unknown as { date: string }[]).map((r) => r.date)),
   });
   const fyMonths = monthsBetween(fyStart, currentYm);
-  return { ledger, dateOf: clock.dateOf, settings, employees: loadEmployees(db), allEmployees: loadEmployees(db, true), fyMonths, pickerMonths: [prevYm, ...fyMonths], currentYm, geoSiteCount: (db.prepare("SELECT COUNT(*) AS n FROM geo_sites").get() as { n: number }).n, nowMin: now.min, today: now.date };
+  const snap: Snapshot = { ledger, dateOf: clock.dateOf, settings, employees: loadEmployees(db), allEmployees: loadEmployees(db, true), fyMonths, pickerMonths: [prevYm, ...fyMonths], currentYm, geoSiteCount: geoSiteCountOf(db), nowMin: now.min, today: now.date };
+  return { snap, from, dataFrom, eventCount: events.length };
 }
