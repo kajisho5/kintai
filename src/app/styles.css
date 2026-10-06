@@ -1743,6 +1743,14 @@ code.pw {
 
 .settings-form {
   max-width: 640px;
+  display: grid;
+  gap: 20px;
+}
+
+.settings-form .hint {
+  display: block;
+  margin-top: 6px;
+  line-height: 1.6;
 }
 
 .holiday-add {
