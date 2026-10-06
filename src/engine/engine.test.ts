@@ -239,3 +239,15 @@ describe("check36 の限度時間（1年単位の変形労働時間制）", () =
     expect(a.some((x) => x.code === "MONTH_OVER_45H_COUNT" && x.level === "violation" && x.message.includes("月42時間超"))).toBe(true);
   });
 });
+
+describe("roundMonthTotal", () => {
+  it("30分未満は切り捨て、30分以上は切り上げ。none ならそのまま", async () => {
+    const { roundMonthTotal } = await import("../domain/format");
+    expect(roundMonthTotal(89, "month30")).toBe(60);
+    expect(roundMonthTotal(90, "month30")).toBe(120);
+    expect(roundMonthTotal(29, "month30")).toBe(0);
+    expect(roundMonthTotal(30, "month30")).toBe(60);
+    expect(roundMonthTotal(0, "month30")).toBe(0);
+    expect(roundMonthTotal(89, "none")).toBe(89);
+  });
+});

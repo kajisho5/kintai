@@ -21,6 +21,10 @@ import {
   type RequestView,
   type Risk,
   type RiskSummary,
+  type Rounding,
+  periodOfYm,
+  roundMonthTotal,
+  ymOfDate,
 } from "../../domain";
 import { ApiError, brief, parse, requireAdmin, type Env } from "../context";
 import { audit, tx, type Db } from "../db";
@@ -28,19 +32,21 @@ import { snapshot, type Snapshot } from "../repo";
 
 const ctx = (c: Context<Env>) => ({ db: c.get("db"), clock: c.get("clock") });
 
-function monthSummary(m: MonthData): MonthSummary {
+function monthSummary(m: MonthData, rounding: Rounding = "none"): MonthSummary {
+  const r = (n: number) => roundMonthTotal(n, rounding);
   return {
+    rounded: rounding !== "none" || undefined,
     workDays: m.workDays,
     leaveDays: m.leaveDays,
     absentDays: m.absentDays,
     incompleteDays: m.incompleteDays,
     workMin: m.result.workMin,
     legalInMin: m.result.days.reduce((s, d) => s + d.legalInMin, 0),
-    overtimeMin: m.result.overtimeMin,
+    overtimeMin: r(m.result.overtimeMin),
     weeklyOvertimeMin: m.result.weeklyOvertimeMin,
     periodOvertimeMin: m.result.periodOvertimeMin,
-    nightMin: m.result.nightMin,
-    holidayMin: m.result.legalHolidayMin,
+    nightMin: r(m.result.nightMin),
+    holidayMin: r(m.result.legalHolidayMin),
   };
 }
 
@@ -93,7 +99,7 @@ const punchState = (snap: Snapshot, me: Employee): PunchStateResponse => {
   const shift = ledger.shiftFor(me.id, snap.nowMin);
   const day = ledger.todayResult(me, snap.nowMin);
   const d = deriveDay(ledger.eventsOf(me.id, shift.date));
-  const ym = snap.today.slice(0, 7);
+  const ym = snap.currentYm;
   const month = ledger.monthOf(me, ym);
   const risk = ledger.riskOf(me);
   return {
@@ -103,7 +109,7 @@ const punchState = (snap: Snapshot, me: Employee): PunchStateResponse => {
     events: { in: d.in, out: d.out, breaks: d.breaks, openBreak: d.openBreak },
     day,
     // 月をまたいで終わる日またぎの勤務は、前月の勤務として扱うので、今月の累計には足さない
-    monthOvertimeMin: month.result.overtimeMin + (shift.date.slice(0, 7) === ym ? day.dailyOvertimeMin : 0),
+    monthOvertimeMin: month.result.overtimeMin + (ymOfDate(shift.date, snap.settings.closingDay) === ym ? day.dailyOvertimeMin : 0),
     outlook: risk.outlook,
     riskLevel: risk.level,
     leaveRemaining: ledger.leaveOf(me).remaining,
@@ -177,7 +183,7 @@ app.get("/api/dashboard", (c) => {
 // ---- 勤怠 ----
 
 const ymParam = (c: Context<Env>, snap: Snapshot): string => {
-  const ym = c.req.query("ym") ?? snap.today.slice(0, 7);
+  const ym = c.req.query("ym") ?? snap.currentYm;
   if (!isYm(ym) || !snap.fyMonths.includes(ym)) throw new ApiError(400, "対象月が正しくありません");
   return ym;
 };
@@ -187,15 +193,18 @@ app.get("/api/attendance", (c) => {
   requireAdmin(c);
   const snap = snapshot(db, clock);
   const ym = ymParam(c, snap);
+  const range = periodOfYm(ym, snap.settings.closingDay);
   const body: AttendanceListResponse = {
     ym,
+    range: { from: range.start, to: range.end },
     months: snap.fyMonths,
     today: snap.today,
+    currentYm: snap.currentYm,
     rows: snap.allEmployees
-      .filter((e) => e.hired.slice(0, 7) <= ym && (!e.leftOn || e.leftOn.slice(0, 7) >= ym))
+      .filter((e) => e.hired <= range.end && (!e.leftOn || e.leftOn >= range.start))
       .map((e) => ({
         emp: brief(e),
-        month: monthSummary(snap.ledger.monthOf(e, ym)),
+        month: monthSummary(snap.ledger.monthOf(e, ym), snap.settings.rounding),
         risk: riskSummary(snap.ledger.riskOf(e, ym)),
         leaveRemaining: snap.ledger.leaveOf(e).remaining,
       })),
@@ -212,12 +221,15 @@ app.get("/api/attendance/:id", (c) => {
   const emp = snap.allEmployees.find((e) => e.id === id);
   if (!emp) throw new ApiError(404, "社員が見つかりません");
   const ym = ymParam(c, snap);
+  const range = periodOfYm(ym, snap.settings.closingDay);
   const body: AttendanceDetailResponse = {
     emp: { ...brief(emp), weeklyDays: emp.weeklyDays, weeklyHours: emp.weeklyHours, workStyle: emp.workStyle },
     ym,
+    range: { from: range.start, to: range.end },
     months: snap.fyMonths,
     today: snap.today,
-    month: monthSummary(snap.ledger.monthOf(emp, ym)),
+    currentYm: snap.currentYm,
+    month: monthSummary(snap.ledger.monthOf(emp, ym), snap.settings.rounding),
     period: snap.ledger.monthOf(emp, ym).period,
     risk: snap.ledger.riskOf(emp, ym),
     series: snap.ledger.overtimeSeries(emp, ym),

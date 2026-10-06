@@ -88,7 +88,7 @@ function EmailVerifyBanner() {
 function Shell() {
   const { me, isAdmin, logout, refresh } = useSession();
   const [route, go] = useHashRoute();
-  const [ym, setYm] = useState(() => defaultYm(me.today, me.settings.fyStartMonth));
+  const [ym, setYm] = useState(() => defaultYm(me.currentYm, me.settings.fyStartMonth));
   const [pwOpen, setPwOpen] = useState(false);
   const myId = me.employee.id;
 

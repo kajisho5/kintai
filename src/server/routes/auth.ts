@@ -3,7 +3,7 @@ import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import { HOLIDAYS_JP_LAST_YEAR } from "../../domain/holidays-jp";
-import type { MeResponse } from "../../domain";
+import { ymOfDate, type MeResponse } from "../../domain";
 import { burnPasswordCheck, checkCredentials, createSession, destroySession, hashPassword, LoginThrottle } from "../auth";
 import { activeCount, ApiError, brief, COOKIE, parse, pendingCount, requireAdmin, type AppConfig, type Env } from "../context";
 import { validateCode, type TenantManager } from "../control";
@@ -305,7 +305,8 @@ export function accountRoutes({ config, manager, mailer, appUrl }: Deps): Hono<E
         emailVerified: !!tenant.adminEmailVerifiedAt,
         ...(me.role === "admin" && !tenant.adminEmailVerifiedAt ? { adminEmail: tenant.adminEmail } : {}),
       },
-      settings: { fyStartMonth: settings.fyStartMonth, specialClause: settings.specialClause },
+      settings: { fyStartMonth: settings.fyStartMonth, specialClause: settings.specialClause, closingDay: settings.closingDay },
+      currentYm: ymOfDate(now.date, settings.closingDay),
       holidaysStale: year > HOLIDAYS_JP_LAST_YEAR || (year === HOLIDAYS_JP_LAST_YEAR && month >= 10),
     };
     return c.json(body);

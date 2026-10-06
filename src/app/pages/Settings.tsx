@@ -98,6 +98,8 @@ function WorkRulesPanel({ s, onSaved }: { s: SettingsResponse; onSaved: () => vo
   const [flexMonths, setFlexMonths] = useState(s.flexMonths);
   const [flexStart, setFlexStart] = useState(s.flexStartMonth);
   const [yearlyStart, setYearlyStart] = useState(s.yearlyStartMonth);
+  const [rounding, setRounding] = useState(s.rounding);
+  const [closing, setClosing] = useState(s.closingDay);
   const [core, setCore] = useState(s.flexCoreStart !== undefined);
   const [coreStart, setCoreStart] = useState(hm(s.flexCoreStart ?? 600));
   const [coreEnd, setCoreEnd] = useState(hm(s.flexCoreEnd ?? 900));
@@ -111,7 +113,7 @@ function WorkRulesPanel({ s, onSaved }: { s: SettingsResponse; onSaved: () => vo
     try {
       await api("/api/settings", {
         method: "PATCH",
-        body: { legalHolidayDow: legalDow, week44, flexMonths, flexStartMonth: flexStart, yearlyStartMonth: yearlyStart, flexCore: core ? { start: toMin(coreStart), end: toMin(coreEnd) } : null },
+        body: { legalHolidayDow: legalDow, week44, flexMonths, flexStartMonth: flexStart, yearlyStartMonth: yearlyStart, rounding, closingDay: closing, flexCore: core ? { start: toMin(coreStart), end: toMin(coreEnd) } : null },
       });
       setMsg("保存しました");
       onSaved();
@@ -165,6 +167,21 @@ function WorkRulesPanel({ s, onSaved }: { s: SettingsResponse; onSaved: () => vo
             <label>コアタイム 終了<input className="field" type="time" value={coreEnd} onChange={(e) => setCoreEnd(e.target.value)} required /></label>
           </div>
         ) : null}
+        <label>
+          勤怠の締め日
+          <select className="field" style={{ maxWidth: 200 }} value={closing} onChange={(e) => setClosing(Number(e.target.value))}>
+            <option value={0}>月末締め</option>
+            {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d}日締め</option>)}
+          </select>
+          <small className="hint">月の集計の区切りです。たとえば20日締めなら、前月21日〜当月20日が「当月分」になります。月の時間外（36協定の月の判定）も、この区切りで数えます。変更は過去の月の集計にも反映されます。</small>
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={rounding === "month30"} onChange={(e) => setRounding(e.target.checked ? "month30" : "none")} />
+          <span>
+            <b>時間外・休日・深夜の月合計を30分単位で丸める</b>
+            <small className="hint">1か月の各合計の1時間未満の端数を、30分未満は切り捨て、30分以上は1時間に切り上げます（昭63.3.14基発150で認められた賃金計算上の処理）。月の集計・CSVにだけ適用し、36協定のチェックは実際の時間で行います。1日ごと・打刻ごとの丸めは法令上認められないため、できません。</small>
+          </span>
+        </label>
         <label>
           1年単位の変形期間の起点月
           <select className="field" style={{ maxWidth: 160 }} value={yearlyStart} onChange={(e) => setYearlyStart(Number(e.target.value))}>

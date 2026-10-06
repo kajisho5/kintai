@@ -151,3 +151,46 @@ describe("勤務区分と会社設定", () => {
     expect(out.employees.find((e: { id: string }) => e.id === "e01").workStyle).toBe("fixed");
   });
 });
+
+describe("端数処理（月合計の30分丸め）", () => {
+  it("設定を有効にすると、時間外・深夜・法定休日の月合計だけが30分単位で丸められる。無効なら実時間のまま", async () => {
+    t.db.prepare("DELETE FROM punch_events WHERE emp_id = 'e01'").run();
+    const ins = t.db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, created_at) VALUES ('e01', ?, ?, ?, 1)");
+    // 10/1(木) 9:00-18:29（実働9時間29分 → 時間外 1時間29分）
+    ins.run("2026-10-01", "in", 540);
+    ins.run("2026-10-01", "out", 1109);
+    const get = async () => ((await t.call("GET", "/api/attendance/e01?ym=2026-10", { cookie: admin })).json as AttendanceDetailResponse).month;
+    expect((await get()).overtimeMin).toBe(89);
+    expect((await get()).rounded).toBeUndefined();
+    await t.call("PATCH", "/api/settings", { cookie: admin, body: { rounding: "month30" } });
+    const m = await get();
+    expect(m.overtimeMin).toBe(60); // 1時間29分 → 29分は切り捨て
+    expect(m.rounded).toBe(true);
+    expect(m.workMin).toBe(569); // 総労働時間は丸めない
+    // 30分以上は切り上げ
+    t.db.prepare("UPDATE punch_events SET min = 1110 WHERE emp_id = 'e01' AND kind = 'out'").run();
+    expect((await get()).overtimeMin).toBe(120); // 1時間30分 → 2時間
+    // 36協定のチェックは、丸めずに実際の時間で行う
+    const risk = ((await t.call("GET", "/api/attendance/e01?ym=2026-10", { cookie: admin })).json as AttendanceDetailResponse).risk;
+    expect(risk.outlook.mtdOvertime).toBe(90);
+  });
+});
+
+describe("締め日", () => {
+  it("締め日を設定すると、月の期間・現在の月・勤怠の集計が締め日で区切られる。不正な値は拒否される", async () => {
+    expect((await t.call("PATCH", "/api/settings", { cookie: admin, body: { closingDay: 29 } })).status).toBe(400);
+    await t.call("PATCH", "/api/settings", { cookie: admin, body: { closingDay: 20 } });
+    const me = (await t.call("GET", "/api/me", { cookie: admin })).json;
+    expect(me.settings.closingDay).toBe(20);
+    expect(me.currentYm).toBe("2026-10"); // 10/6 は 9/21〜10/20 の期間（10月分）
+    const d = (await t.call("GET", "/api/attendance/e01?ym=2026-10", { cookie: admin })).json as AttendanceDetailResponse;
+    expect(d.range).toEqual({ from: "2026-09-21", to: "2026-10-20" });
+    expect(d.currentYm).toBe("2026-10");
+    expect(d.days[0]!.plan.date).toBe("2026-09-21");
+    const list = (await t.call("GET", "/api/attendance?ym=2026-10", { cookie: admin })).json;
+    expect(list.range).toEqual({ from: "2026-09-21", to: "2026-10-20" });
+    // 月末締めに戻すと暦月
+    await t.call("PATCH", "/api/settings", { cookie: admin, body: { closingDay: 0 } });
+    expect(((await t.call("GET", "/api/attendance/e01?ym=2026-10", { cookie: admin })).json as AttendanceDetailResponse).range).toEqual({ from: "2026-10-01", to: "2026-10-31" });
+  });
+});

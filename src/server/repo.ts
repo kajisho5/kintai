@@ -1,4 +1,4 @@
-import { Ledger, addDays, fiscalStartYm, flexPeriod, monthsBetween, yearlyPeriod, type Employee, type LeaveRow, type PunchEvent, type ScheduleRow, type WorkStyle } from "../domain";
+import { Ledger, addDays, type Rounding, fiscalStartYm, flexPeriodOfYm, monthsBetween, periodOfYm, yearlyPeriodOfYm, ymOfDate, type Employee, type LeaveRow, type PunchEvent, type ScheduleRow, type WorkStyle } from "../domain";
 import type { Clock } from "./clock";
 import type { Db } from "./db";
 
@@ -74,6 +74,10 @@ export interface CompanySettings {
   /** フレックスタイム制のコアタイム（0:00 からの分）。なければ null */
   flexCoreStart: number | null;
   flexCoreEnd: number | null;
+  /** 時間外・休日・深夜の月合計の端数処理 */
+  rounding: Rounding;
+  /** 勤怠の締め日（0 = 月末締め） */
+  closingDay: number;
 }
 
 const intIn = (v: string, lo: number, hi: number, fallback: number): number => {
@@ -95,6 +99,8 @@ export function loadSettings(db: Db): CompanySettings {
     yearlyStartMonth: intIn(getSetting(db, "yearly_start_month", "4"), 1, 12, 4),
     flexCoreStart: core ? Number(coreS) : null,
     flexCoreEnd: core ? Number(coreE) : null,
+    rounding: getSetting(db, "rounding", "none") === "month30" ? "month30" : "none",
+    closingDay: intIn(getSetting(db, "closing_day", "0"), 0, 28, 0),
   };
 }
 
@@ -107,6 +113,8 @@ export interface Snapshot {
   /** 退職者を含む全社員 */
   allEmployees: Employee[];
   fyMonths: string[];
+  /** 今日が属する月（締め日があれば、締め日の翌日以降は翌月分） */
+  currentYm: string;
   nowMin: number;
   today: string;
 }
@@ -115,9 +123,14 @@ export interface Snapshot {
 export function snapshot(db: Db, clock: Clock): Snapshot {
   const now = clock.now();
   const settings = loadSettings(db);
-  const fyStart = fiscalStartYm(now.date, settings.fyStartMonth);
+  const currentYm = ymOfDate(now.date, settings.closingDay);
+  const fyStart = fiscalStartYm(`${currentYm}-01`, settings.fyStartMonth);
   // 協定期間の初日に日またぎで終わる勤務のため、前日から読む。1年単位の変形期間・フレックスの清算期間が協定期間より前から始まる場合は、そこから読む
-  const earliest = [`${fyStart}-01`, yearlyPeriod(now.date, settings.yearlyStartMonth).start, flexPeriod(now.date, settings.flexStartMonth, settings.flexMonths).start].sort()[0]!;
+  const earliest = [
+    periodOfYm(fyStart, settings.closingDay).start,
+    yearlyPeriodOfYm(currentYm, settings.yearlyStartMonth, settings.closingDay).start,
+    flexPeriodOfYm(currentYm, settings.flexStartMonth, settings.flexMonths, settings.closingDay).start,
+  ].sort()[0]!;
   const from = addDays(earliest, -1);
   const events = (
     db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE date >= ? ORDER BY seq").all(from) as unknown as PunchEvent[]
@@ -133,6 +146,7 @@ export function snapshot(db: Db, clock: Clock): Snapshot {
     specialClause: settings.specialClause,
     fiscalStartMonth: settings.fyStartMonth,
     legalHolidayDow: settings.legalHolidayDow,
+    closingDay: settings.closingDay,
     weeklyLegalMin: settings.week44 ? 44 * 60 : 40 * 60,
     flexMonths: settings.flexMonths,
     flexStartMonth: settings.flexStartMonth,
@@ -140,6 +154,6 @@ export function snapshot(db: Db, clock: Clock): Snapshot {
     flexCore: settings.flexCoreStart !== null ? { start: settings.flexCoreStart, end: settings.flexCoreEnd! } : undefined,
     schedules,
   });
-  const fyMonths = monthsBetween(fyStart, now.date.slice(0, 7));
-  return { ledger, dateOf: clock.dateOf, settings, employees: loadEmployees(db), allEmployees: loadEmployees(db, true), fyMonths, nowMin: now.min, today: now.date };
+  const fyMonths = monthsBetween(fyStart, currentYm);
+  return { ledger, dateOf: clock.dateOf, settings, employees: loadEmployees(db), allEmployees: loadEmployees(db, true), fyMonths, currentYm, nowMin: now.min, today: now.date };
 }

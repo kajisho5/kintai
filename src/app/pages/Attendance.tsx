@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronLeft, Download, Search } from "lucide-react";
 import { useApi } from "../api";
 import type { AttendanceDetailResponse, AttendanceListResponse, AttendanceRow } from "../../domain/api";
-import { datesOfMonth, dowOf } from "../../domain/calendar";
+import { datesBetween, dowOf } from "../../domain/calendar";
 import { WORK_STYLE_LABEL, type DayPlan } from "../../domain/types";
 import { WD, clock, csvDownload, dur, durOrDash, hours1, shortDate, ymLabel } from "../format";
 import { useSession } from "../session";
@@ -10,12 +10,12 @@ import { Empty, Figure, Gauge, MonthPicker, Pill, RiskPill, Who } from "../ui/ki
 
 const RISK_ORDER = { ok: 0, warning: 1, violation: 2 } as const;
 
-/** 勤怠は締め済みの前月から見る（前月が協定期間に無ければ当月） */
-export function defaultYm(today: string, fyStartMonth = 4): string {
-  const [y, m] = today.split("-").map(Number) as [number, number];
+/** 勤怠は締め済みの前の月から見る（前の月が協定期間に無ければ当月）。currentYm は今日が属する月（締め日があれば翌月分のことがある） */
+export function defaultYm(currentYm: string, fyStartMonth = 4): string {
+  const [y, m] = currentYm.split("-").map(Number) as [number, number];
   const prev = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
   const fyStartYear = m >= fyStartMonth ? y : y - 1;
-  return prev >= `${fyStartYear}-${String(fyStartMonth).padStart(2, "0")}` ? prev : today.slice(0, 7);
+  return prev >= `${fyStartYear}-${String(fyStartMonth).padStart(2, "0")}` ? prev : currentYm;
 }
 
 // ---------------------------------------------------------------- 一覧
@@ -54,7 +54,7 @@ export function Attendance({ go, ym, setYm }: { go: (to: string) => void; ym: st
 
   if (!data) return <p className={error ? "status-error" : ""} role="status">{error ?? "読み込んでいます…"}</p>;
 
-  const current = ym === data.today.slice(0, 7);
+  const current = ym === data.currentYm;
   const total = (f: (x: AttendanceRow) => number) => shown.reduce((s, x) => s + f(x), 0);
   const attention = shown.filter((x) => x.risk.level !== "ok").length;
 
@@ -81,7 +81,10 @@ export function Attendance({ go, ym, setYm }: { go: (to: string) => void; ym: st
       <header className="page-head">
         <div>
           <h1>勤怠一覧</h1>
-          <p>{current ? "当月は前日までの実績で集計しています" : "月次の実績"}</p>
+          <p>
+            {current ? "当月は前日までの実績で集計しています" : "月次の実績"}
+            {rangeText(data.range)}
+          </p>
         </div>
         <div className="tools">
           <MonthPicker months={data.months} value={ym} onChange={setYm} />
@@ -199,7 +202,7 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
           <div>
             <h1>{emp.name}</h1>
             <p>
-              {emp.dept}{emp.title ? `・${emp.title}` : ""}・{emp.kind}（週{emp.weeklyDays}日／{emp.weeklyHours}時間）
+              {emp.dept}{emp.title ? `・${emp.title}` : ""}・{emp.kind}（週{emp.weeklyDays}日／{emp.weeklyHours}時間）{rangeText(data.range)}
               {variable ? <span style={{ marginLeft: 8 }}><Pill tone="live" plain>{WORK_STYLE_LABEL[emp.workStyle]}</Pill></span> : null}
             </p>
           </div>
@@ -228,7 +231,7 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
               <h2 id="chart-t">月別の時間外労働<span className="sub">{ymLabel(data.months[0]!)}〜（協定期間）</span></h2>
               <span className="legend"><span>破線は月{monthLimit}時間</span></span>
             </div>
-            <div className="panel-body"><OvertimeChart series={data.series} selected={ym} currentYm={today.slice(0, 7)} limitHours={monthLimit} /></div>
+            <div className="panel-body"><OvertimeChart series={data.series} selected={ym} currentYm={data.currentYm} limitHours={monthLimit} /></div>
           </section>
           <section className="panel" aria-labelledby="al-t">
             <div className="panel-head">
@@ -251,7 +254,7 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
               <dl className="kv" style={{ marginTop: 10 }}>
                 <div><dt>年の時間外累計（{me.settings.specialClause ? "特別条項の上限720時間" : `上限${yearLimit}時間`}）</dt><dd>{hours1(risk.yearOvertime)}h</dd></div>
                 <div><dt>月{monthLimit}時間超の回数（特別条項は年6回まで）</dt><dd>{risk.over45Count}回</dd></div>
-                <div><dt>{ym === today.slice(0, 7) ? "月末見込" : "当月実績"}</dt><dd>{hours1(risk.outlook.projOvertime)}h</dd></div>
+                <div><dt>{ym === data.currentYm ? "月末見込" : "当月実績"}</dt><dd>{hours1(risk.outlook.projOvertime)}h</dd></div>
               </dl>
             </div>
           </section>
@@ -267,7 +270,7 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
                 </tr>
               </thead>
               <tbody>
-                {datesOfMonth(ym).map((d) => {
+                {datesBetween(data.range.from, data.range.to).map((d) => {
                   const row = byDate.get(d);
                   const p = row?.plan;
                   const r = row?.result;
@@ -306,6 +309,7 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
           </div>
         </section>
         <p className="note">
+          {m.rounded ? "時間外・深夜・法定休日の月合計は、会社の設定により30分単位で丸めています（30分未満切捨・以上切上）。下の日別の合計とは一致しないことがあります。" : null}
           {variable
             ? "日別の「時間外」は、その日に新たに発生した時間外（日・週・期間の判定の合計）です。週・期間の超過は、超えた日に付きます。本日は集計前です。"
             : `合計の時間外には、週40時間を超えた分${m.weeklyOvertimeMin ? `（${dur(m.weeklyOvertimeMin)}）` : ""}を含みます。日別の欄は日8時間超のみを表示します。`}
@@ -313,6 +317,12 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
       </div>
     </>
   );
+}
+
+/** 締め日がある会社は、月の期間を示す（暦月どおりなら示さない） */
+function rangeText(r: { from: string; to: string }): string {
+  const calendar = r.from.slice(8) === "01" && r.from.slice(0, 7) === r.to.slice(0, 7);
+  return calendar ? "" : `（対象期間 ${shortDate(r.from)}〜${shortDate(r.to)}）`;
 }
 
 /** 時間外の内訳の表示 */

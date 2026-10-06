@@ -116,6 +116,8 @@ export interface LedgerOptions {
   fiscalStartMonth?: number;
   /** 法定休日の曜日（0=日曜）。シフトで法定休日を指定した週は、その日が法定休日になる */
   legalHolidayDow?: number;
+  /** 勤怠の締め日（0 = 月末締め）。例: 20 → 前月21日〜当月20日を当月分とする */
+  closingDay?: number;
   /** 週の法定労働時間（分）。既定 2400（40時間）。特例措置対象事業場は 2640（44時間） */
   weeklyLegalMin?: number;
   /** フレックスタイム制の清算期間（1〜3か月）と、その区切りの起点月 */

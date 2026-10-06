@@ -171,3 +171,33 @@ describe("法定休日とシフト", () => {
     expect(l.todayRow(night, h(9) + 30).status).toBe("before"); // 朝の9:30は、シフト（22時開始）のずっと前
   });
 });
+
+describe("締め日（月の区切り）", () => {
+  const closing20 = { closingDay: 20 };
+  it("20日締めの10月分は 9/21〜10/20。その期間の打刻だけが集計される", () => {
+    const ev = [...work("2026-09-20", h(10)), ...work("2026-09-21", h(10)), ...work("2026-10-20", h(10)), ...work("2026-10-21", h(10))];
+    const l = ledger(ev, closing20, "2026-11-05");
+    const oct = l.monthOf(base, "2026-10");
+    expect(oct.plans[0]!.date).toBe("2026-09-21");
+    expect(oct.plans[oct.plans.length - 1]!.date).toBe("2026-10-20");
+    expect(oct.workDays).toBe(2); // 9/21 と 10/20
+    expect(oct.result.overtimeMin).toBe(h(4));
+    expect(l.monthOf(base, "2026-11").plans[0]!.date).toBe("2026-10-21");
+    expect(l.monthOf(base, "2026-09").workDays).toBe(1); // 9/20
+  });
+
+  it("今日が締め日の翌日以降なら、「当月」は翌月分になる。月末締めなら暦月のまま", () => {
+    expect(ledger([], closing20, "2026-10-20").currentYm).toBe("2026-10");
+    expect(ledger([], closing20, "2026-10-21").currentYm).toBe("2026-11");
+    expect(ledger([], {}, "2026-10-31").currentYm).toBe("2026-10");
+  });
+
+  it("月末見込・フレックスの総枠・1年単位の期間も、締め日の区切りで計算される", () => {
+    // 20日締めの10月分 = 9/21〜10/20（30日）。フレックスの総枠 = floor(2400 × 30 / 7)
+    const l = ledger([], closing20, "2026-10-05");
+    const m = l.monthOf(as("flex"), "2026-10");
+    expect(m.period).toMatchObject({ start: "2026-09-21", end: "2026-10-20", frameMin: Math.floor((2400 * 30) / 7) });
+    const y = ledger([], closing20, "2026-10-05").monthOf(as("yearly"), "2026-10");
+    expect(y.period).toMatchObject({ start: "2026-03-21", end: "2027-03-20" }); // 4月分 = 3/21〜4/20 から12か月
+  });
+});

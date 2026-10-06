@@ -20,7 +20,7 @@ import {
   type PeriodResult,
 } from "../engine";
 import { barsFor } from "./bars";
-import { addDays, addMonths, datesBetween, datesOfMonth, diffDays, dowOf, fiscalStartYm, flexPeriod, lastDateOfMonth, monthsBetween, yearlyPeriod } from "./calendar";
+import { addDays, addMonths, datesBetween, datesOfPeriod, diffDays, dowOf, fiscalStartYm, flexPeriodOfYm, monthsBetween, periodOfYm, yearlyPeriodOfYm, ymOfDate } from "./calendar";
 import type {
   Calendar,
   DayPlan,
@@ -108,6 +108,15 @@ export class Ledger {
 
   get today(): string {
     return this.cal.today;
+  }
+
+  private get closing(): number {
+    return this.opts.closingDay ?? 0;
+  }
+
+  /** 今日が属する月（締め日があれば、締め日の翌日以降は翌月分） */
+  get currentYm(): string {
+    return ymOfDate(this.cal.today, this.closing);
   }
 
   eventsOf(empId: string, date: string): PunchEvent[] {
@@ -229,13 +238,13 @@ export class Ledger {
     const key = `${emp.id}|${ym}`;
     const hit = this.monthCache.get(key);
     if (hit) return hit;
-    const plans = datesOfMonth(ym)
+    const plans = datesOfPeriod(ym, this.closing)
       .filter((d) => d < this.cal.today && d >= emp.hired && (!emp.leftOn || d <= emp.leftOn))
       .map((d) => this.planOf(emp, d));
     const worked = plans.filter((p) => p.kind === "work");
     const leaveMap = this.leaves.get(emp.id);
     const leaveDays = leaveMap
-      ? datesOfMonth(ym)
+      ? datesOfPeriod(ym, this.closing)
           .filter((d) => d < this.cal.today)
           .reduce((s, d) => s + (leaveMap.get(d) ?? 0), 0)
       : 0;
@@ -287,16 +296,17 @@ export class Ledger {
 
   /** 月 ym を含む変形期間・清算期間。1週間単位は、その月にかかる週をすべて含める */
   private periodOf(emp: Employee, ym: string): { start: string; end: string } {
-    const first = `${ym}-01`;
     switch (emp.workStyle) {
       case "yearly":
-        return yearlyPeriod(first, this.opts.yearlyStartMonth ?? 4);
+        return yearlyPeriodOfYm(ym, this.opts.yearlyStartMonth ?? 4, this.closing);
       case "flex":
-        return flexPeriod(first, this.opts.flexStartMonth ?? 4, this.opts.flexMonths ?? 1);
-      case "weekly":
-        return { start: weekStart(first, 1), end: addDays(weekStart(lastDateOfMonth(ym), 1), 6) };
+        return flexPeriodOfYm(ym, this.opts.flexStartMonth ?? 4, this.opts.flexMonths ?? 1, this.closing);
+      case "weekly": {
+        const p = periodOfYm(ym, this.closing);
+        return { start: weekStart(p.start, 1), end: addDays(weekStart(p.end, 1), 6) };
+      }
       default:
-        return { start: first, end: lastDateOfMonth(ym) };
+        return periodOfYm(ym, this.closing);
     }
   }
 
@@ -315,7 +325,7 @@ export class Ledger {
 
   private computePeriod(emp: Employee, inputs: PeriodDayInput[]): PeriodResult {
     const weeklyLegalMin = this.weeklyLegalMin;
-    if (emp.workStyle === "flex") return calcFlexPeriod(inputs, { weeklyLegalMin });
+    if (emp.workStyle === "flex") return calcFlexPeriod(inputs, { weeklyLegalMin, groupOf: (d) => ymOfDate(d, this.closing) });
     if (emp.workStyle !== "weekly") return calcVariablePeriod(inputs, { weeklyLegalMin });
     // 1週間単位: 週ごとに独立して計算する
     const days: PeriodDayResult[] = [];
@@ -398,7 +408,7 @@ export class Ledger {
       return { ...base, work: { start: plan.start, end: plan.start + len + plan.breakMin }, breaks: plan.breakMin ? [{ start: plan.start + 240, end: plan.start + 240 + plan.breakMin }] : undefined };
     });
     const r = this.computePeriod(emp, inputs);
-    return comp.dates.reduce((s, d, i) => (d.startsWith(ym) ? s + r.days[i]!.overtimeMin : s), 0);
+    return comp.dates.reduce((s, d, i) => (ymOfDate(d, this.closing) === ym ? s + r.days[i]!.overtimeMin : s), 0);
   }
 
   /** 日別明細: plans と、出勤日の集計結果を突き合わせる */
@@ -409,13 +419,13 @@ export class Ledger {
   }
 
   private scheduledDays(emp: Employee, ym: string): { elapsed: number; total: number } {
-    const all = datesOfMonth(ym).filter((d) => d >= emp.hired && (!emp.leftOn || d <= emp.leftOn) && this.isScheduled(emp, d));
+    const all = datesOfPeriod(ym, this.closing).filter((d) => d >= emp.hired && (!emp.leftOn || d <= emp.leftOn) && this.isScheduled(emp, d));
     return { elapsed: all.filter((d) => d < this.cal.today).length, total: all.length };
   }
 
   outlookOf(emp: Employee, ym: string, fyMonths: string[]): Outlook {
     const m = this.monthOf(emp, ym).result;
-    if (ym !== this.cal.today.slice(0, 7)) {
+    if (ym !== this.currentYm) {
       return { mtdOvertime: m.overtimeMin, projOvertime: m.overtimeMin, holiday: m.legalHolidayMin };
     }
     if (emp.workStyle !== "fixed") {
@@ -435,7 +445,7 @@ export class Ledger {
     return { mtdOvertime: m.overtimeMin, projOvertime: Math.round(w * extrap + (1 - w) * prevAvg), holiday: m.legalHolidayMin };
   }
 
-  riskOf(emp: Employee, ym: string = this.cal.today.slice(0, 7)): Risk {
+  riskOf(emp: Employee, ym: string = this.currentYm): Risk {
     const key = `${emp.id}|${ym}`;
     const hit = this.riskCache.get(key);
     if (hit) return hit;
@@ -462,7 +472,7 @@ export class Ledger {
 
   /** 月別の時間外（グラフ用）。当月は累計と見込を併記 */
   overtimeSeries(emp: Employee, upToYm: string): { ym: string; actual: number; proj: number }[] {
-    const months = monthsBetween(fiscalStartYm(`${upToYm}-01`, this.opts.fiscalStartMonth), this.cal.today.slice(0, 7));
+    const months = monthsBetween(fiscalStartYm(`${upToYm}-01`, this.opts.fiscalStartMonth), this.currentYm);
     return months.map((ym) => {
       const o = this.outlookOf(emp, ym, months);
       return { ym, actual: o.mtdOvertime, proj: o.projOvertime };

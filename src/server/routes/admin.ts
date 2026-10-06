@@ -417,6 +417,8 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
       flexMonths: s.flexMonths,
       flexStartMonth: s.flexStartMonth,
       yearlyStartMonth: s.yearlyStartMonth,
+      rounding: s.rounding,
+      closingDay: s.closingDay,
       flexCoreStart: s.flexCoreStart ?? undefined,
       flexCoreEnd: s.flexCoreEnd ?? undefined,
       holidays: db.prepare("SELECT date, name, kind FROM holidays WHERE date >= ? ORDER BY date").all(`${year - 1}-01-01`) as unknown as SettingsResponse["holidays"],
@@ -442,6 +444,8 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
         flexMonths: z.number().int().min(1, "清算期間は1〜3か月です").max(3, "清算期間は1〜3か月です").optional(),
         flexStartMonth: z.number().int().min(1).max(12).optional(),
         yearlyStartMonth: z.number().int().min(1).max(12).optional(),
+        rounding: z.enum(["none", "month30"]).optional(),
+        closingDay: z.number().int().min(0, "締め日は0（月末）〜28日で指定してください").max(28, "締め日は0（月末）〜28日で指定してください").optional(),
         /** コアタイム。両方を送る。null で「なし」にする */
         flexCore: z.union([z.object({ start: z.number().int().min(0).max(1439), end: z.number().int().min(1).max(1440) }), z.null()]).optional(),
       }),
@@ -453,6 +457,8 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     if (p.fyStartMonth !== undefined) put.run("fy_start_month", String(p.fyStartMonth));
     if (p.legalHolidayDow !== undefined) put.run("legal_holiday_dow", String(p.legalHolidayDow));
     if (p.week44 !== undefined) put.run("week44", p.week44 ? "1" : "0");
+    if (p.rounding !== undefined) put.run("rounding", p.rounding);
+    if (p.closingDay !== undefined) put.run("closing_day", String(p.closingDay));
     if (p.flexMonths !== undefined) put.run("flex_months", String(p.flexMonths));
     if (p.flexStartMonth !== undefined) put.run("flex_start_month", String(p.flexStartMonth));
     if (p.yearlyStartMonth !== undefined) put.run("yearly_start_month", String(p.yearlyStartMonth));

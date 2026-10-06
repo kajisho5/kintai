@@ -34,7 +34,7 @@ describe("会社登録", () => {
     expect(me.employee).toMatchObject({ id: "admin", name: "青木 一郎", role: "admin" });
     expect(me.tenant).toMatchObject({ code: "acme", name: "アクメ工業株式会社", state: "trialing", writable: true, seatsUsed: 1, seatLimit: 30 });
     expect(me.tenant.trialDaysLeft).toBe(30);
-    expect(me.settings).toEqual({ fyStartMonth: 4, specialClause: true });
+    expect(me.settings).toEqual({ fyStartMonth: 4, closingDay: 0, specialClause: true });
   });
 
   it("入力の検証: 企業ID・パスワード・メール・規約同意", async () => {

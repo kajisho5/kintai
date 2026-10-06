@@ -34,12 +34,16 @@ export interface MeResponse {
     /** 管理者のみ・未確認のときだけ: 確認メールの送り先 */
     adminEmail?: string;
   };
-  settings: { fyStartMonth: number; specialClause: boolean };
+  settings: { fyStartMonth: number; specialClause: boolean; closingDay: number };
+  /** 今日が属する勤怠の月（締め日があれば、締め日の翌日以降は翌月分） */
+  currentYm: string;
   /** 祝日データが古く、来年の祝日が未登録になりそう */
   holidaysStale: boolean;
 }
 
 export interface MonthSummary {
+  /** 時間外・深夜・法定休日は、会社の設定により月合計を30分単位で丸めた値（日別の合計とは一致しないことがある） */
+  rounded?: boolean;
   workDays: number;
   leaveDays: number;
   absentDays: number;
@@ -71,16 +75,22 @@ export interface AttendanceRow {
 
 export interface AttendanceListResponse {
   ym: string;
+  /** 対象月の期間（締め日があれば、前月の締め日の翌日〜当月の締め日） */
+  range: { from: string; to: string };
   months: string[];
   today: string;
+  currentYm: string;
   rows: AttendanceRow[];
 }
 
 export interface AttendanceDetailResponse {
   emp: EmpBrief & { weeklyDays: number; weeklyHours: number; workStyle: WorkStyle };
   ym: string;
+  /** 対象月の期間（締め日があれば、前月の締め日の翌日〜当月の締め日） */
+  range: { from: string; to: string };
   months: string[];
   today: string;
+  currentYm: string;
   month: MonthSummary;
   /** 変形労働時間制・フレックスタイム制の社員の、変形期間・清算期間の状況 */
   period?: PeriodInfo;
@@ -228,6 +238,10 @@ export interface SettingsResponse {
   flexStartMonth: number;
   /** 1年単位の変形期間の起点月 */
   yearlyStartMonth: number;
+  /** 時間外・休日・深夜の月合計の端数処理（none=しない / month30=30分未満切捨・以上切上） */
+  rounding: "none" | "month30";
+  /** 勤怠の締め日（0 = 月末締め）。20 なら前月21日〜当月20日を当月分とする */
+  closingDay: number;
   /** フレックスタイム制のコアタイム（0:00 からの分）。なければ未設定 */
   flexCoreStart?: number;
   flexCoreEnd?: number;

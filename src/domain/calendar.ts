@@ -77,3 +77,45 @@ export function flexPeriod(date: string, startMonth: number, months: number): { 
   const startYm = addYm(ym, -back);
   return { start: `${startYm}-01`, end: lastDateOfMonth(addYm(startYm, months - 1)) };
 }
+
+// ---------------------------------------------------------------- 締め日（月の区切り）
+
+/**
+ * 勤怠の月の区切り。0 = 月末締め（暦月）。1〜28 = その日に締める。
+ * 例: 20日締めの「2026年10月分」は、2026-09-21〜2026-10-20。
+ */
+export type ClosingDay = number;
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** 月（ym）の期間。月末締めなら暦月、締め日があれば前月の締め日の翌日から当月の締め日まで */
+export function periodOfYm(ym: string, closing: ClosingDay = 0): { start: string; end: string } {
+  if (!closing) return { start: `${ym}-01`, end: lastDateOfMonth(ym) };
+  return { start: addDays(`${addYm(ym, -1)}-${pad2(closing)}`, 1), end: `${ym}-${pad2(closing)}` };
+}
+
+export const datesOfPeriod = (ym: string, closing: ClosingDay = 0): string[] => {
+  const p = periodOfYm(ym, closing);
+  return datesBetween(p.start, p.end);
+};
+
+/** 日付が属する月（締め日の翌日以降は、翌月分） */
+export function ymOfDate(date: string, closing: ClosingDay = 0): string {
+  const ym = date.slice(0, 7);
+  return closing && Number(date.slice(8)) > closing ? addYm(ym, 1) : ym;
+}
+
+/** 1年単位の変形期間（startMonth 分から12か月）のうち、月 ym を含むもの */
+export function yearlyPeriodOfYm(ym: string, startMonth: number, closing: ClosingDay = 0): { start: string; end: string } {
+  const [y, m] = ym.split("-").map(Number) as [number, number];
+  const startYm = `${m >= startMonth ? y : y - 1}-${pad2(startMonth)}`;
+  return { start: periodOfYm(startYm, closing).start, end: periodOfYm(addYm(startYm, 11), closing).end };
+}
+
+/** フレックスタイム制の清算期間（startMonth 分から months か月ずつ）のうち、月 ym を含むもの */
+export function flexPeriodOfYm(ym: string, startMonth: number, months: number, closing: ClosingDay = 0): { start: string; end: string } {
+  const m = Number(ym.slice(5, 7));
+  const back = ((((m - startMonth) % 12) + 12) % 12) % months;
+  const startYm = addYm(ym, -back);
+  return { start: periodOfYm(startYm, closing).start, end: periodOfYm(addYm(startYm, months - 1), closing).end };
+}
