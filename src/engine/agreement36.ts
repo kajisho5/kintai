@@ -80,9 +80,15 @@ export function check36(history: MonthlyTotals[], opts: CheckOptions): Alert[] {
   const year = history.reduce((s, m) => s + m.overtimeMin, 0);
   const over45Count = history.filter((m) => m.overtimeMin > 45 * H).length;
 
+  // 月45時間: 特別条項なしは違反。特別条項ありでも超過は「適用」として知らせる（年6回まで）
+  if (cur.overtimeMin > 45 * H) {
+    if (!opts.hasSpecialClause) push("MONTH_OVER_45H", "violation", "時間外労働が月45時間を超えています");
+    else push("MONTH_OVER_45H", "warning", `月45時間を超えています（特別条項の適用 年${over45Count}回目／年6回まで）`);
+  } else if (cur.overtimeMin > 45 * H * warnRatio) {
+    push("MONTH_OVER_45H", "warning", "時間外労働が月45時間に近づいています");
+  }
+
   if (!opts.hasSpecialClause) {
-    if (cur.overtimeMin > 45 * H) push("MONTH_OVER_45H", "violation", "時間外労働が月45時間を超えています");
-    else if (cur.overtimeMin > 45 * H * warnRatio) push("MONTH_OVER_45H", "warning", "時間外労働が月45時間に近づいています");
     if (year > 360 * H) push("YEAR_OVER_360H", "violation", "時間外労働が年360時間を超えています");
     else if (year > 360 * H * warnRatio) push("YEAR_OVER_360H", "warning", "時間外労働が年360時間に近づいています");
   } else {

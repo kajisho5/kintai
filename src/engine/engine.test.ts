@@ -178,4 +178,17 @@ describe("check36", () => {
     const a = check36(hist, { hasSpecialClause: true });
     expect(a.some((x) => x.code === "YEAR_OVER_720H" && x.level === "violation")).toBe(true);
   });
+  it("特別条項あり: 月46hは違反ではなく適用の通知（warning）", () => {
+    const a = check36([m("2026-10", 46)], { hasSpecialClause: true });
+    const month = a.find((y) => y.code === "MONTH_OVER_45H");
+    expect(month?.level).toBe("warning");
+    expect(a.some((y) => y.level === "violation")).toBe(false);
+  });
+  it("特別条項あり: 月40hは45hへの接近を警告", () => {
+    const a = check36([m("2026-10", 40)], { hasSpecialClause: true });
+    expect(a.some((y) => y.code === "MONTH_OVER_45H" && y.level === "warning")).toBe(true);
+  });
+  it("月30hは警告なし", () => {
+    expect(check36([m("2026-10", 30)], { hasSpecialClause: true })).toEqual([]);
+  });
 });
