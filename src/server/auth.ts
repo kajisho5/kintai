@@ -93,3 +93,12 @@ export class LoginThrottle {
     for (const [k, f] of this.fails) if (f.until <= nowMs && nowMs - f.last > this.lockMs * 2) this.fails.delete(k);
   }
 }
+
+/** ICカードの番号を比べやすい形にそろえる（読み取り機によって、区切りや大文字小文字が違うため）。使えない形なら undefined */
+export function normalizeCard(raw: string): string | undefined {
+  const s = raw.trim().toUpperCase().replace(/[\s:_-]/g, "");
+  return /^[0-9A-Z]{4,64}$/.test(s) ? s : undefined;
+}
+
+/** カード番号の保存用の値（会社ごとに異なる。カード番号そのものは保存しない） */
+export const cardHash = (tenantId: string, normalized: string): string => createHash("sha256").update(`card:${tenantId}:${normalized}`).digest("hex");

@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { Copy, Download, KeyRound, Pencil, Plus, Search, Upload, UserMinus, UserPlus } from "lucide-react";
+import { Copy, CreditCard, Download, KeyRound, Pencil, Plus, Search, Upload, UserMinus, UserPlus } from "lucide-react";
 import { api, useApi } from "../api";
 import type { EmployeeAdmin, EmployeesResponse, ImportResponse } from "../../domain/api";
 import { WORK_STYLES, WORK_STYLE_LABEL, type WorkStyle } from "../../domain/types";
@@ -33,6 +33,7 @@ export function Employees() {
   const [importing, setImporting] = useState(false);
   const [creds, setCreds] = useState<Cred[] | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "deactivate" | "reactivate" | "reset"; emp: EmployeeAdmin } | null>(null);
+  const [terminal, setTerminal] = useState<string | null>(null);
 
   const rows = data?.rows ?? [];
   const depts = useMemo(() => [...new Set(rows.map((r) => r.dept))], [rows]);
@@ -99,6 +100,7 @@ export function Employees() {
                         <button type="button" className="btn sm text" onClick={() => setEdit(r)} aria-label={`${r.name}を編集`}><Pencil size={14} />編集</button>
                         {r.active ? (
                           <>
+                            <button type="button" className="btn sm text" onClick={() => setTerminal(r.id)} aria-label={`${r.name}の共用端末用の暗証番号・カード`}><CreditCard size={14} />端末用</button>
                             <button type="button" className="btn sm text" onClick={() => setConfirm({ kind: "reset", emp: r })} aria-label={`${r.name}のパスワードを再発行`}><KeyRound size={14} />再発行</button>
                             <button type="button" className="btn sm text" onClick={() => setConfirm({ kind: "deactivate", emp: r })} aria-label={`${r.name}を退職処理`}><UserMinus size={14} />退職</button>
                           </>
@@ -129,6 +131,7 @@ export function Employees() {
       />
       <ImportDialog open={importing} onClose={() => setImporting(false)} onImported={(c) => { done(); setCreds(c); }} />
       <CredentialsDialog creds={creds} onClose={() => setCreds(null)} />
+      <TerminalDialog emp={rows.find((r) => r.id === terminal) ?? null} onClose={() => setTerminal(null)} onChanged={reload} />
 
       <ConfirmDialog
         open={confirm?.kind === "deactivate"}
@@ -192,6 +195,7 @@ function EmployeeForm({ emp, depts, onClose, onSaved }: { emp: EmployeeAdmin | n
     kind: emp?.kind ?? ("正社員" as "正社員" | "パート"),
     role: emp?.role ?? ("employee" as "admin" | "employee"),
     workStyle: emp?.workStyle ?? ("fixed" as WorkStyle),
+    geoExempt: emp?.geoExempt ?? false,
     email: emp?.email ?? "",
     workDays: emp?.workDays ?? [1, 2, 3, 4, 5],
     baseHours: emp ? emp.baseMin / 60 : 8,
@@ -215,6 +219,7 @@ function EmployeeForm({ emp, depts, onClose, onSaved }: { emp: EmployeeAdmin | n
       kind: f.kind,
       role: f.role,
       workStyle: f.workStyle,
+      geoExempt: f.geoExempt,
       email: f.email,
       workDays: f.workDays,
       baseMin: Math.round(f.baseHours * 60),
@@ -280,6 +285,10 @@ function EmployeeForm({ emp, depts, onClose, onSaved }: { emp: EmployeeAdmin | n
           </small>
         ) : null}
       </label>
+      <label className="check">
+        <input type="checkbox" checked={f.geoExempt} onChange={(e) => set("geoExempt", e.target.checked)} />
+        <span><b>位置情報による打刻場所の制限を受けない</b><small className="hint">在宅勤務・外回りなど。会社設定で「範囲外では打刻できない」にしていても、どこからでも打刻できます（位置情報は記録されます）。</small></span>
+      </label>
       <label>メールアドレス（任意）<input className="field" type="email" value={f.email} onChange={(e) => set("email", e.target.value)} maxLength={120} /></label>
       <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
         <legend style={{ fontWeight: 700, color: "var(--ink-2)", padding: 0, marginBottom: 5 }}>所定労働日</legend>
@@ -303,6 +312,69 @@ function EmployeeForm({ emp, depts, onClose, onSaved }: { emp: EmployeeAdmin | n
         <button type="submit" className="btn primary" disabled={busy || f.workDays.length === 0}>{busy ? "保存中…" : emp ? "保存する" : "追加する"}</button>
       </div>
     </form>
+  );
+}
+
+// ---------------------------------------------------------------- 共用端末用の暗証番号・カード
+
+function TerminalDialog({ emp, onClose, onChanged }: { emp: EmployeeAdmin | null; onClose: () => void; onChanged: () => void }) {
+  const [pin, setPin] = useState<string | null>(null);
+  const [card, setCard] = useState("");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const close = () => {
+    setPin(null);
+    setCard("");
+    setMsg(null);
+    onClose();
+  };
+  const run = async (fn: () => Promise<void>, ok: string) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await fn();
+      setMsg({ ok: true, text: ok });
+      onChanged();
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "失敗しました" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const id = emp ? encodeURIComponent(emp.id) : "";
+
+  return (
+    <Modal open={emp !== null} onClose={close} title={emp ? `${emp.name}さんの共用端末用の設定` : ""}>
+      {emp ? (
+        <div className="form">
+          <section style={{ display: "grid", gap: 8 }}>
+            <b>暗証番号（6桁）</b>
+            <p className="note" style={{ margin: 0 }}>共用端末で、社員IDと一緒に入力します。{emp.hasPin ? "発行済みです。忘れた場合は、再発行してください（前の番号は使えなくなります）。" : "まだ発行していません。"}</p>
+            {pin ? (
+              <div className="banner info" role="status" style={{ margin: 0, display: "grid" }}>
+                <span>本人に伝えてください。この画面を閉じると、再表示できません。</span>
+                <code className="pw" style={{ fontSize: 24, letterSpacing: 6 }}>{pin}</code>
+              </div>
+            ) : null}
+            <div className="actions" style={{ justifyContent: "flex-start" }}>
+              <button type="button" className="btn" disabled={busy} onClick={() => void run(async () => setPin((await api<{ pin: string }>(`/api/employees/${id}/pin`, { method: "POST" })).pin), "暗証番号を発行しました")}>{emp.hasPin ? "再発行" : "発行する"}</button>
+              {emp.hasPin ? <button type="button" className="btn text" disabled={busy} onClick={() => void run(async () => { await api(`/api/employees/${id}/pin`, { method: "DELETE" }); setPin(null); }, "暗証番号を削除しました")}>削除</button> : null}
+            </div>
+          </section>
+          <section style={{ display: "grid", gap: 8 }}>
+            <b>ICカード</b>
+            <p className="note" style={{ margin: 0 }}>カードリーダーをパソコンに接続し、下の欄を選んでカードをかざすと、番号が入力されます。{emp.hasCard ? "登録済みです。別のカードに差し替えられます。" : "まだ登録していません。"}</p>
+            <div className="actions" style={{ justifyContent: "flex-start" }}>
+              <input className="field" style={{ maxWidth: 260 }} value={card} onChange={(e) => setCard(e.target.value)} placeholder="カード番号" aria-label="カード番号" autoComplete="off" maxLength={100} />
+              <button type="button" className="btn" disabled={busy || !card.trim()} onClick={() => void run(async () => { await api(`/api/employees/${id}/card`, { method: "PUT", body: { card } }); setCard(""); }, "カードを登録しました")}>{emp.hasCard ? "差し替える" : "登録する"}</button>
+              {emp.hasCard ? <button type="button" className="btn text" disabled={busy} onClick={() => void run(() => api(`/api/employees/${id}/card`, { method: "DELETE" }).then(() => undefined), "カードの登録を削除しました")}>削除</button> : null}
+            </div>
+          </section>
+          {msg ? <div className={msg.ok ? "" : "form-error"} role={msg.ok ? "status" : "alert"} style={msg.ok ? { color: "var(--matsu)", fontWeight: 700 } : undefined}>{msg.text}</div> : null}
+          <div className="actions"><button type="button" className="btn primary" onClick={close}>閉じる</button></div>
+        </div>
+      ) : null}
+    </Modal>
   );
 }
 

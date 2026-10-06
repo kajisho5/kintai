@@ -1977,3 +1977,142 @@ code.pw {
   border-radius: var(--r);
   padding: 8px 10px;
 }
+
+
+/* ---------------------------------------------------------------- 共用の打刻端末 */
+.kiosk {
+  min-height: 100vh;
+  padding: 24px clamp(16px, 4vw, 48px);
+  background: var(--paper);
+  display: grid;
+  align-content: start;
+  gap: 22px;
+}
+
+.kiosk-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.kiosk-clock {
+  text-align: right;
+}
+
+.kiosk-clock b {
+  display: block;
+  font-size: clamp(40px, 7vw, 72px);
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+.kiosk-clock b span {
+  font-size: 0.45em;
+  margin-left: 6px;
+  color: var(--ink-3);
+}
+
+.kiosk-clock small {
+  color: var(--ink-3);
+  font-size: 16px;
+}
+
+.kiosk-card {
+  width: min(560px, 100%);
+  margin: 0 auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 28px;
+  display: grid;
+  gap: 18px;
+  text-align: center;
+}
+
+.kiosk-card h1 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.4;
+}
+
+.kiosk-form {
+  display: grid;
+  gap: 14px;
+  text-align: left;
+}
+
+.kiosk-form label {
+  display: grid;
+  gap: 6px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.kiosk-form .field {
+  width: 100%;
+  font-size: 22px;
+  padding: 12px 14px;
+}
+
+.keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.keypad button {
+  height: 64px;
+  font-size: 26px;
+  font-family: var(--font-num);
+  font-weight: 600;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.keypad button:active {
+  background: var(--ai-soft);
+}
+
+.keypad button.go {
+  background: var(--ai);
+  color: #fff;
+  border-color: var(--ai);
+}
+
+.keypad button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.kiosk-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.kiosk-actions .pbtn {
+  min-height: 84px;
+  font-size: 22px;
+  justify-content: center;
+}
+
+.kiosk-card.done {
+  border-color: var(--matsu);
+  background: var(--matsu-soft);
+}
+
+.kiosk-result {
+  margin: 0;
+  font-size: 22px;
+}
+
+.kiosk-result .num {
+  font-size: 34px;
+  margin-left: 8px;
+}

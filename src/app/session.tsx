@@ -3,6 +3,7 @@ import type { MeResponse } from "../domain/api";
 import { api } from "./api";
 import { Login } from "./pages/Login";
 import { Forgot, Reset, Verify } from "./pages/Recover";
+import { Kiosk } from "./pages/Kiosk";
 import { Signup } from "./pages/Signup";
 
 interface Base {
@@ -67,6 +68,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("kintai:unauthorized", off);
   }, [load]);
 
+  // 共用の打刻端末は、ログインせず、端末のトークンで動く
+  if (window.location.hash.startsWith("#/kiosk")) return <Kiosk />;
   if (state.status === "loading") return <div className="splash" role="status" aria-label="読み込み中" />;
   // 確認メールのリンクは、ログイン中でも未ログインでも同じ画面で処理する
   if (window.location.hash.startsWith("#/verify")) return <Verify loggedIn={state.status === "authed"} onDone={load} />;

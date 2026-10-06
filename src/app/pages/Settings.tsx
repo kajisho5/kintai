@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { Download, Plus, Trash2 } from "lucide-react";
+import { Copy, Download, LocateFixed, Plus, Trash2 } from "lucide-react";
 import { api, useApi } from "../api";
-import type { HolidayRow, SettingsResponse } from "../../domain/api";
+import type { GeoSite, HolidayRow, KioskTerminal, SettingsResponse } from "../../domain/api";
 import { dowOf } from "../../domain/calendar";
 import { HOLIDAYS_JP_LAST_YEAR } from "../../domain/holidays-jp";
 import { WD, shortDate } from "../format";
@@ -23,6 +23,8 @@ export function Settings() {
       <div className="stack">
         <GeneralPanel s={data} onSaved={() => { reload(); refresh(); }} />
         <WorkRulesPanel s={data} onSaved={() => { reload(); refresh(); }} />
+        <GeoPanel s={data} onChanged={reload} />
+        <KioskPanel />
         <HolidayPanel holidays={data.holidays} stale={data.holidaysStale} today={me.today} onChanged={reload} />
         <section className="panel" aria-labelledby="x-title">
           <div className="panel-head"><h2 id="x-title">データの書き出し</h2></div>
@@ -195,6 +197,180 @@ function WorkRulesPanel({ s, onSaved }: { s: SettingsResponse; onSaved: () => vo
         </div>
         <p className="note" style={{ margin: 0 }}>これらの設定は、過去の月の集計にも反映されます。労使協定の内容と合わせてください。</p>
       </form>
+    </section>
+  );
+}
+
+/** 打刻場所の確認（位置情報） */
+function GeoPanel({ s, onChanged }: { s: SettingsResponse; onChanged: () => void }) {
+  const [mode, setMode] = useState(s.geoMode);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [site, setSite] = useState({ name: "", lat: "", lng: "", radiusM: "100" });
+  const [error, setError] = useState("");
+
+  const saveMode = async (m: typeof mode) => {
+    setMode(m);
+    setMsg("");
+    try {
+      await api("/api/settings", { method: "PATCH", body: { geoMode: m } });
+      setMsg("保存しました");
+      onChanged();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "保存に失敗しました");
+    }
+  };
+  const here = () => {
+    setError("");
+    navigator.geolocation?.getCurrentPosition(
+      (p) => setSite((v) => ({ ...v, lat: p.coords.latitude.toFixed(6), lng: p.coords.longitude.toFixed(6) })),
+      () => setError("現在地を取得できません。ブラウザの位置情報の許可を確認するか、緯度・経度を直接入力してください"),
+      { enableHighAccuracy: true, timeout: 10_000 },
+    );
+  };
+  const add = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api("/api/settings/geo-sites", { method: "POST", body: { name: site.name, lat: Number(site.lat), lng: Number(site.lng), radiusM: Number(site.radiusM) } });
+      setSite({ name: "", lat: "", lng: "", radiusM: "100" });
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "追加に失敗しました");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (g: GeoSite) => {
+    setError("");
+    try {
+      await api(`/api/settings/geo-sites/${g.id}`, { method: "DELETE" });
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "削除に失敗しました");
+    }
+  };
+
+  return (
+    <section className="panel" aria-labelledby="geo-title">
+      <div className="panel-head"><h2 id="geo-title">打刻場所の確認（位置情報）<span className="sub">スマートフォン・PCのブラウザからの打刻が対象です</span></h2></div>
+      <div className="form settings-form">
+        <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+          <legend style={{ fontWeight: 700, color: "var(--ink-2)", padding: 0, marginBottom: 5 }}>確認の方法</legend>
+          <div className="radio-row" style={{ flexWrap: "wrap" }}>
+            <label><input type="radio" name="geo" checked={mode === "off"} onChange={() => void saveMode("off")} />確認しない</label>
+            <label><input type="radio" name="geo" checked={mode === "record"} onChange={() => void saveMode("record")} />記録する（範囲外は勤怠に表示）</label>
+            <label><input type="radio" name="geo" checked={mode === "enforce"} onChange={() => void saveMode("enforce")} />範囲外では打刻できない</label>
+          </div>
+          <small className="hint">位置情報は、打刻の瞬間にだけ取得し、勤務場所の確認にのみ使います。社員への周知と、プライバシーポリシーへの記載が必要です。ブラウザの位置情報は端末側で書き換えられるため、不正を完全に防ぐものではなく、確認の目安です。在宅勤務・外回りの社員は、社員管理で制限の対象外にできます。共用の打刻端末は、この確認の対象外です。</small>
+          <span role="status" style={{ color: msg === "保存しました" ? "var(--matsu)" : "var(--beni)", fontWeight: 700 }}>{msg}</span>
+        </fieldset>
+        {mode !== "off" && s.geoSites.length === 0 ? <div className="status-error" role="alert">打刻場所が登録されていません。登録するまでは、位置情報の確認は行われません。</div> : null}
+      </div>
+      <div className="tbl-wrap">
+        <table className="tbl">
+          <thead><tr><th>名称</th><th>緯度・経度</th><th className="r">半径</th><th className="r">操作</th></tr></thead>
+          <tbody>
+            {s.geoSites.length === 0 ? <tr><td colSpan={4} style={{ color: "var(--ink-3)" }}>登録された打刻場所はありません</td></tr> : null}
+            {s.geoSites.map((g) => (
+              <tr key={g.id}>
+                <td>{g.name}</td>
+                <td className="n">{g.lat.toFixed(6)}, {g.lng.toFixed(6)}</td>
+                <td className="r">{g.radiusM} m</td>
+                <td className="r"><button type="button" className="btn sm text" onClick={() => void remove(g)} aria-label={`${g.name}を削除`}><Trash2 size={14} />削除</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <form className="form holiday-add" onSubmit={add} style={{ alignItems: "end" }}>
+        <label>名称<input className="field" value={site.name} onChange={(e) => setSite({ ...site, name: e.target.value })} placeholder="例: 本社・大阪支店" required maxLength={30} /></label>
+        <label>緯度<input className="field" inputMode="decimal" value={site.lat} onChange={(e) => setSite({ ...site, lat: e.target.value })} placeholder="35.681236" required /></label>
+        <label>経度<input className="field" inputMode="decimal" value={site.lng} onChange={(e) => setSite({ ...site, lng: e.target.value })} placeholder="139.767125" required /></label>
+        <label>半径（m）<input className="field" type="number" min={10} max={5000} value={site.radiusM} onChange={(e) => setSite({ ...site, radiusM: e.target.value })} required style={{ maxWidth: 110 }} /></label>
+        <button type="button" className="btn" onClick={here}><LocateFixed size={16} />現在地を入れる</button>
+        <button type="submit" className="btn primary" disabled={busy}><Plus size={16} />追加</button>
+      </form>
+      {error ? <div className="status-error" role="alert">{error}</div> : null}
+    </section>
+  );
+}
+
+/** 共用の打刻端末（タブレットなど）の登録 */
+function KioskPanel() {
+  const { data, reload } = useApi<KioskTerminal[]>("/api/kiosk/terminals");
+  const [name, setName] = useState("");
+  const [created, setCreated] = useState<{ name: string; url: string } | null>(null);
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  const add = async (e: FormEvent) => {
+    e.preventDefault();
+    setError("");
+    try {
+      const r = await api<{ name: string; url: string; token: string }>("/api/kiosk/terminals", { method: "POST", body: { name } });
+      setCreated({ name: r.name, url: r.url.startsWith("/") ? `${window.location.origin}${r.url}` : r.url });
+      setCopied(false);
+      setName("");
+      reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "登録に失敗しました");
+    }
+  };
+  const revoke = async (t: KioskTerminal) => {
+    setError("");
+    try {
+      await api(`/api/kiosk/terminals/${t.id}`, { method: "DELETE" });
+      reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "無効にできませんでした");
+    }
+  };
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(created!.url);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  };
+  const when = (ms?: number) => (ms ? new Date(ms).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "未使用");
+
+  return (
+    <section className="panel" aria-labelledby="kiosk-title">
+      <div className="panel-head"><h2 id="kiosk-title">共用の打刻端末<span className="sub">事務所・店舗・現場に置くタブレットなど</span></h2></div>
+      <div className="panel-body" style={{ display: "grid", gap: 12 }}>
+        <p style={{ margin: 0 }}>端末に登録用のURLを開くと、ログインなしで打刻画面になります。社員は、ICカード（カードリーダーをUSBキーボードとして接続）か、社員IDと暗証番号で本人を確認して打刻します。暗証番号とカードは、社員管理の「端末用」から発行・登録します。</p>
+        {created ? (
+          <div className="banner info" role="status" style={{ display: "grid", margin: 0 }}>
+            <b>「{created.name}」を登録しました。次のURLを、端末のブラウザで開いてください（この画面を閉じると再表示できません）。</b>
+            <code className="pw" style={{ wordBreak: "break-all", fontWeight: 500 }}>{created.url}</code>
+            <div><button type="button" className="btn sm" onClick={() => void copy()}><Copy size={14} />{copied ? "コピーしました" : "URLをコピー"}</button></div>
+          </div>
+        ) : null}
+        <form className="form holiday-add" onSubmit={add} style={{ padding: 0 }}>
+          <label>端末の名前<input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder="例: 正面玄関・倉庫" required maxLength={30} /></label>
+          <button type="submit" className="btn"><Plus size={16} />端末を登録</button>
+        </form>
+        {error ? <div className="status-error" role="alert">{error}</div> : null}
+      </div>
+      <div className="tbl-wrap">
+        <table className="tbl">
+          <thead><tr><th>端末</th><th>最後に使った時刻</th><th>状態</th><th className="r">操作</th></tr></thead>
+          <tbody>
+            {(data ?? []).length === 0 ? <tr><td colSpan={4} style={{ color: "var(--ink-3)" }}>登録された端末はありません</td></tr> : null}
+            {(data ?? []).map((t) => (
+              <tr key={t.id} className={t.revoked ? "rest" : ""}>
+                <td>{t.name}</td>
+                <td>{when(t.lastUsedAt)}</td>
+                <td>{t.revoked ? <Pill plain>無効</Pill> : <Pill tone="ok">有効</Pill>}</td>
+                <td className="r">{t.revoked ? null : <button type="button" className="btn sm text" onClick={() => void revoke(t)} aria-label={`${t.name}を無効にする`}><Trash2 size={14} />無効にする</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

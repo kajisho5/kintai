@@ -30,6 +30,7 @@ import {
 } from "../../domain";
 import { ApiError, brief, parse, requireAdmin, type Env } from "../context";
 import { audit, tx, type Db } from "../db";
+import { recordPunch, punchState } from "../punch";
 import { snapshot, type Snapshot } from "../repo";
 
 const ctx = (c: Context<Env>) => ({ db: c.get("db"), clock: c.get("clock") });
@@ -77,7 +78,6 @@ type NewReq = z.infer<typeof newRequestSchema>;
 
 
 
-const PUNCH_LABEL: Record<PunchKind, string> = { in: "出勤", out: "退勤", break_start: "休憩開始", break_end: "休憩終了" };
 
 interface ReqRow {
   id: number;
@@ -96,62 +96,18 @@ export function workRoutes(): Hono<Env> {
 
 // ---- 打刻 ----
 
-const punchState = (snap: Snapshot, me: Employee): PunchStateResponse => {
-  const { ledger } = snap;
-  const shift = ledger.shiftFor(me.id, snap.nowMin);
-  const day = ledger.todayResult(me, snap.nowMin);
-  const d = deriveDay(ledger.eventsOf(me.id, shift.date));
-  const ym = snap.currentYm;
-  const month = ledger.monthOf(me, ym);
-  const risk = ledger.riskOf(me);
-  return {
-    date: shift.date,
-    offsetMin: shift.offset,
-    nowMin: snap.nowMin + shift.offset,
-    events: { in: d.in, out: d.out, breaks: d.breaks, openBreak: d.openBreak },
-    day,
-    // 月をまたいで終わる日またぎの勤務は、前月の勤務として扱うので、今月の累計には足さない
-    monthOvertimeMin: month.result.overtimeMin + (ymOfDate(shift.date, snap.settings.closingDay) === ym ? day.dailyOvertimeMin : 0),
-    outlook: risk.outlook,
-    riskLevel: risk.level,
-    leaveRemaining: ledger.leaveOf(me).remaining,
-  };
-};
-
 app.get("/api/punch/today", (c) => {
   const { db, clock } = ctx(c);
   return c.json(punchState(snapshot(db, clock), c.get("me")));
 });
 
+const geoSchema = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), accuracy: z.number().min(0).max(100000).optional() });
+
 app.post("/api/punch", async (c) => {
   const { db, clock } = ctx(c);
   const me = c.get("me");
-  const { action } = parse(z.object({ action: z.enum(["in", "out", "break_start", "break_end"]) }), await c.req.json().catch(() => null));
-  const now = clock.now();
-  const min = Math.floor(now.min);
-  const eventsOn = (date: string) =>
-    deriveDay(db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE emp_id = ? AND date = ? ORDER BY seq").all(me.id, date) as never);
-  tx(db, () => {
-    const yesterday = addDays(now.date, -1);
-    const today = eventsOn(now.date);
-    const prev = eventsOn(yesterday);
-    // 昨日の出勤から退勤していない勤務が続いている（日またぎ）なら、その勤務への打刻とする
-    const carrying = today.in === undefined && prev.in !== undefined && prev.out === undefined && 1440 + min - prev.in <= MAX_SHIFT_MIN;
-    if (action === "in" && carrying) throw new ApiError(409, "前の勤務（昨日の出勤）が退勤になっていません。先に退勤を記録してください");
-    const target = carrying ? { date: yesterday, off: 1440, d: prev } : { date: now.date, off: 0, d: today };
-    const d = target.d;
-    const at = min + target.off;
-    if (action === "in" && d.in !== undefined) throw new ApiError(409, "本日はすでに出勤を記録しています");
-    if (action !== "in" && d.in === undefined) throw new ApiError(409, "先に出勤を記録してください");
-    if (d.out !== undefined) throw new ApiError(409, "本日はすでに退勤を記録しています");
-    if (action === "break_start" && d.openBreak !== undefined) throw new ApiError(409, "すでに休憩中です");
-    if (action === "break_end" && d.openBreak === undefined) throw new ApiError(409, "休憩を開始していません");
-    const ins = db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, source, created_at) VALUES (?, ?, ?, ?, 'punch', ?)");
-    // 休憩中の退勤は、休憩を退勤時刻で閉じてから記録する
-    if (action === "out" && d.openBreak !== undefined) ins.run(me.id, target.date, "break_end", at, now.ts);
-    ins.run(me.id, target.date, action, at, now.ts);
-    audit(db, now.ts, me.id, "punch", { action: PUNCH_LABEL[action], date: target.date, min: at });
-  });
+  const { action, geo } = parse(z.object({ action: z.enum(["in", "out", "break_start", "break_end"]), geo: geoSchema.optional() }), await c.req.json().catch(() => null));
+  recordPunch(db, clock, me, action, { geo });
   return c.json(punchState(snapshot(db, clock), me));
 });
 
@@ -261,6 +217,15 @@ app.get("/api/attendance/export", (c) => {
   });
 });
 
+/** 位置情報の確認で気になる打刻があった日（範囲外は out、位置情報なしは unknown）。設定が無効なら空 */
+function geoFlagsOf(db: Db, snap: Snapshot, empId: string, range: { start: string; end: string }): Record<string, "out" | "unknown"> {
+  if (snap.settings.geoMode === "off") return {};
+  const rows = db.prepare("SELECT date, geo FROM punch_events WHERE emp_id = ? AND date >= ? AND date <= ? AND geo IN ('out','unknown')").all(empId, range.start, range.end) as unknown as { date: string; geo: "out" | "unknown" }[];
+  const flags: Record<string, "out" | "unknown"> = {};
+  for (const r of rows) if (r.geo === "out" || !flags[r.date]) flags[r.date] = r.geo;
+  return flags;
+}
+
 app.get("/api/attendance/:id", (c) => {
   const { db, clock } = ctx(c);
   const me = c.get("me");
@@ -280,6 +245,7 @@ app.get("/api/attendance/:id", (c) => {
     currentYm: snap.currentYm,
     month: monthSummary(snap.ledger.monthOf(emp, ym), snap.settings.rounding),
     period: snap.ledger.monthOf(emp, ym).period,
+    geoFlags: geoFlagsOf(db, snap, emp.id, range),
     risk: snap.ledger.riskOf(emp, ym),
     series: snap.ledger.overtimeSeries(emp, ym),
     days: snap.ledger.dayRows(emp, ym),

@@ -65,6 +65,7 @@ export async function runJobs(d: JobDeps, opts: { fullSeatReconcile?: boolean } 
     }
 
     out.cleaned += Number(db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(now).changes);
+    out.cleaned += Number(db.prepare("DELETE FROM kiosk_tickets WHERE expires_at < ?").run(now).changes);
     out.cleaned += Number(db.prepare("DELETE FROM password_resets WHERE expires_at < ? OR used_at IS NOT NULL").run(now - DAY).changes);
   }
   out.cleaned += d.manager.cleanEmailVerifications(d.clockFor("Asia/Tokyo").now().ts, DAY);

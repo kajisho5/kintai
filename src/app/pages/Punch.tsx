@@ -7,6 +7,18 @@ import { useClock, useSession } from "../session";
 import { Gauge, Pill, RiskPill } from "../ui/kit";
 
 type Act = "in" | "out" | "break_start" | "break_end";
+
+/** 現在地（打刻の確認用）。許可がない・取得できないときは失敗する */
+function currentPosition(): Promise<{ lat: number; lng: number; accuracy: number }> {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error("位置情報に対応していません"));
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }),
+      (e) => reject(new Error(e.message)),
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 30_000 },
+    );
+  });
+}
 const LABEL: Record<Act, string> = { in: "出勤", out: "退勤", break_start: "休憩開始", break_end: "休憩終了" };
 
 export function Punch() {
@@ -25,7 +37,8 @@ export function Punch() {
   const onBreak = ev.openBreak !== undefined;
   const phase = ev.in === undefined ? "before" : ev.out !== undefined ? "done" : onBreak ? "break" : "working";
   const enabled: Record<Act, boolean> = {
-    in: phase === "before",
+    // 日またぎの勤務を退勤したあとの表示でも、次の勤務の出勤は押せる
+    in: phase === "before" || (phase === "done" && s.offsetMin > 0),
     break_start: phase === "working",
     break_end: phase === "break",
     out: phase === "working" || phase === "break",
@@ -35,8 +48,11 @@ export function Punch() {
     setBusy(true);
     setErr("");
     try {
+      // 位置情報の確認が有効なら、打刻の瞬間の位置を送る（取得できなくても、制限モードでなければ打刻は止まらない）
+      const geo = s.geo.mode === "off" ? undefined : await currentPosition().catch(() => undefined);
+      if (s.geo.required && !geo) throw new Error("位置情報を取得できません。ブラウザの位置情報の許可を確認してください");
       // 時刻はサーバーが記録する（端末の時計は使わない）
-      const next = await api<PunchStateResponse>("/api/punch", { method: "POST", body: { action: a } });
+      const next = await api<PunchStateResponse>("/api/punch", { method: "POST", body: { action: a, geo } });
       setState(next);
       const t = a === "in" ? next.events.in : a === "out" ? next.events.out : a === "break_start" ? next.events.openBreak : next.events.breaks[next.events.breaks.length - 1]?.end;
       setToast(`${LABEL[a]}を記録しました${t !== undefined ? `（${fmtClock(t)}）` : ""}`);
@@ -117,6 +133,11 @@ export function Punch() {
               <span><b>休憩終了</b><small>{last("break_end")}</small></span>
             </button>
           </div>
+          {s.geo.mode !== "off" ? (
+            <p className="note" style={{ textAlign: "center", margin: "0 16px 8px" }}>
+              打刻の確認のため、打刻の瞬間の位置情報を使います{s.geo.required ? "（打刻には位置情報の許可が必要です）" : "（許可しなくても打刻できます）"}。位置情報は、勤務場所の確認にだけ使います。
+            </p>
+          ) : null}
           <div className="toast" role="status" aria-live="polite">{toast}</div>
           {err ? <div className="form-error" role="alert" style={{ textAlign: "center", paddingBottom: 16 }}>{err}</div> : null}
         </section>

@@ -10,6 +10,7 @@ interface EmpRow {
   kind: "正社員" | "パート";
   role: "admin" | "employee";
   work_style: WorkStyle;
+  geo_exempt: number;
   work_days: string;
   weekly_days: number;
   weekly_hours: number;
@@ -30,6 +31,7 @@ const toEmployee = (r: EmpRow): Employee => ({
   kind: r.kind,
   role: r.role,
   workStyle: r.work_style,
+  geoExempt: r.geo_exempt === 1,
   workDays: JSON.parse(r.work_days) as number[],
   weeklyDays: r.weekly_days,
   weeklyHours: r.weekly_hours,
@@ -78,6 +80,8 @@ export interface CompanySettings {
   rounding: Rounding;
   /** 勤怠の締め日（0 = 月末締め） */
   closingDay: number;
+  /** 位置情報による打刻場所の確認 */
+  geoMode: "off" | "record" | "enforce";
 }
 
 const intIn = (v: string, lo: number, hi: number, fallback: number): number => {
@@ -101,6 +105,7 @@ export function loadSettings(db: Db): CompanySettings {
     flexCoreEnd: core ? Number(coreE) : null,
     rounding: getSetting(db, "rounding", "none") === "month30" ? "month30" : "none",
     closingDay: intIn(getSetting(db, "closing_day", "0"), 0, 28, 0),
+    geoMode: ((v) => (v === "record" || v === "enforce" ? v : "off"))(getSetting(db, "geo_mode", "off")),
   };
 }
 
@@ -115,6 +120,8 @@ export interface Snapshot {
   fyMonths: string[];
   /** 今日が属する月（締め日があれば、締め日の翌日以降は翌月分） */
   currentYm: string;
+  /** 登録されている打刻場所の数 */
+  geoSiteCount: number;
   nowMin: number;
   today: string;
 }
@@ -155,5 +162,5 @@ export function snapshot(db: Db, clock: Clock): Snapshot {
     schedules,
   });
   const fyMonths = monthsBetween(fyStart, currentYm);
-  return { ledger, dateOf: clock.dateOf, settings, employees: loadEmployees(db), allEmployees: loadEmployees(db, true), fyMonths, currentYm, nowMin: now.min, today: now.date };
+  return { ledger, dateOf: clock.dateOf, settings, employees: loadEmployees(db), allEmployees: loadEmployees(db, true), fyMonths, currentYm, geoSiteCount: (db.prepare("SELECT COUNT(*) AS n FROM geo_sites").get() as { n: number }).n, nowMin: now.min, today: now.date };
 }

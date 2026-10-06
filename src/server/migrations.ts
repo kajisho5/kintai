@@ -134,6 +134,44 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_schedules_date ON schedules (date);
     `,
   },
+  {
+    id: 6,
+    name: "geo_and_kiosk",
+    sql: `
+      -- 位置情報つき打刻: geo は 'in'=打刻場所の範囲内 / 'out'=範囲外 / 'unknown'=位置情報なし
+      ALTER TABLE punch_events ADD COLUMN lat REAL;
+      ALTER TABLE punch_events ADD COLUMN lng REAL;
+      ALTER TABLE punch_events ADD COLUMN accuracy REAL;
+      ALTER TABLE punch_events ADD COLUMN geo TEXT CHECK (geo IN ('in','out','unknown'));
+      ALTER TABLE employees ADD COLUMN geo_exempt INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE geo_sites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        lat REAL NOT NULL CHECK (lat BETWEEN -90 AND 90),
+        lng REAL NOT NULL CHECK (lng BETWEEN -180 AND 180),
+        radius_m INTEGER NOT NULL CHECK (radius_m BETWEEN 10 AND 5000)
+      );
+
+      -- 共用の打刻端末（タブレットなど）。token_hash は端末のトークンのハッシュ
+      ALTER TABLE employees ADD COLUMN punch_pin_hash TEXT;
+      ALTER TABLE employees ADD COLUMN card_hash TEXT;
+      CREATE UNIQUE INDEX idx_employees_card ON employees (card_hash) WHERE card_hash IS NOT NULL;
+      CREATE TABLE kiosk_terminals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        revoked_at INTEGER
+      );
+      CREATE TABLE kiosk_tickets (
+        token_hash TEXT PRIMARY KEY,
+        emp_id TEXT NOT NULL REFERENCES employees(id),
+        terminal_id INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): number[] {

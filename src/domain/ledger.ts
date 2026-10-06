@@ -43,6 +43,8 @@ import type {
 const SCHED_GRACE_MIN = 15;
 /** 出勤から退勤までの上限。これを超えて退勤が無い勤務は、日またぎで続いているのではなく打刻漏れとみなす */
 export const MAX_SHIFT_MIN = 20 * 60;
+/** 日またぎの勤務を退勤したあと、その勤務を「退勤済み」として表示し続ける時間 */
+export const CLOSED_SHIFT_DISPLAY_MIN = 12 * 60;
 
 interface PeriodComputed {
   per: { start: string; end: string };
@@ -142,7 +144,8 @@ export class Ledger {
     const y = deriveDay(this.eventsOf(empId, yesterday));
     if (y.in !== undefined) {
       if (y.out === undefined && 1440 + nowMin - y.in <= MAX_SHIFT_MIN) return { date: yesterday, offset: 1440, open: true };
-      if (y.out !== undefined && y.out >= 1440) return { date: yesterday, offset: 1440, open: false };
+      // 今日に入ってから退勤した勤務は、退勤から半日のあいだ「退勤済み」として表示する（その後は次の勤務の出勤前として扱う）
+      if (y.out !== undefined && y.out >= 1440 && nowMin - (y.out - 1440) <= CLOSED_SHIFT_DISPLAY_MIN) return { date: yesterday, offset: 1440, open: false };
     }
     return { date: today, offset: 0, open: false };
   }

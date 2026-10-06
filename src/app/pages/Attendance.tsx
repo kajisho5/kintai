@@ -285,7 +285,10 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
                       <td className="r">{r ? durOrDash(r.legalInMin) : ""}</td>
                       <td className={`r ${r && r.dailyOvertimeMin > 120 ? "hot" : ""}`}>{r ? durOrDash(r.dailyOvertimeMin) : ""}</td>
                       <td className="r">{r ? durOrDash(r.nightMin) : ""}</td>
-                      <td style={{ color: "var(--ink-3)" }}>{p?.kind === "work" && p.note && p.note !== lab.text ? p.note : ""}</td>
+                      <td style={{ color: "var(--ink-3)" }}>
+                        {p?.kind === "work" && p.note && p.note !== lab.text ? p.note : ""}
+                        {data.geoFlags[d] ? <span style={{ marginLeft: 6 }}><Pill tone={data.geoFlags[d] === "out" ? "bad" : "warn"} plain>{data.geoFlags[d] === "out" ? "打刻場所の範囲外" : "位置情報なし"}</Pill></span> : null}
+                      </td>
                     </tr>
                   );
                 })}

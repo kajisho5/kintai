@@ -1,6 +1,6 @@
 /** API の入出力の型（サーバーとフロントで共有） */
 import type { Alert, DayResult, Interval } from "../engine";
-import type { DayPlan, LeaveInfo, Outlook, PeriodInfo, Risk, RiskLevel, Role, TodayRow, WorkStyle } from "./types";
+import type { DayPlan, LeaveInfo, Outlook, PeriodInfo, PunchKind, Risk, RiskLevel, Role, TodayRow, WorkStyle } from "./types";
 
 export interface EmpBrief {
   id: string;
@@ -94,6 +94,8 @@ export interface AttendanceDetailResponse {
   month: MonthSummary;
   /** 変形労働時間制・フレックスタイム制の社員の、変形期間・清算期間の状況 */
   period?: PeriodInfo;
+  /** 位置情報の確認で、打刻場所の範囲外（out）・位置情報なし（unknown）だった日（位置情報の設定が有効なときだけ） */
+  geoFlags: Record<string, "out" | "unknown">;
   risk: Risk;
   series: { ym: string; actual: number; proj: number }[];
   days: { plan: DayPlan; result?: DayResult }[];
@@ -159,6 +161,8 @@ export interface PunchStateResponse {
   outlook: Outlook;
   riskLevel: RiskLevel;
   leaveRemaining: number;
+  /** 位置情報による打刻場所の確認。required のとき、打刻には位置情報が必要 */
+  geo: { mode: "off" | "record" | "enforce"; required: boolean };
 }
 
 export interface LeaveResponse {
@@ -181,6 +185,12 @@ export interface EmployeeAdmin {
   kind: "正社員" | "パート";
   role: Role;
   workStyle: WorkStyle;
+  /** 位置情報による打刻場所の制限を受けない（在宅勤務・外回りなど） */
+  geoExempt: boolean;
+  /** 共用端末で使う打刻用の暗証番号（PIN）を発行済みか */
+  hasPin: boolean;
+  /** 共用端末で使う ICカードを登録済みか */
+  hasCard: boolean;
   email?: string;
   workDays: number[];
   weeklyDays: number;
@@ -225,6 +235,14 @@ export interface HolidayRow {
   kind: "national" | "company";
 }
 
+export interface GeoSite {
+  id: number;
+  name: string;
+  lat: number;
+  lng: number;
+  radiusM: number;
+}
+
 export interface SettingsResponse {
   company: { name: string; code: string };
   specialClause: boolean;
@@ -238,6 +256,9 @@ export interface SettingsResponse {
   flexStartMonth: number;
   /** 1年単位の変形期間の起点月 */
   yearlyStartMonth: number;
+  /** 位置情報による打刻場所の確認（off=しない / record=記録し、範囲外を知らせる / enforce=範囲外では打刻できない） */
+  geoMode: "off" | "record" | "enforce";
+  geoSites: GeoSite[];
   /** 時間外・休日・深夜の月合計の端数処理（none=しない / month30=30分未満切捨・以上切上） */
   rounding: "none" | "month30";
   /** 勤怠の締め日（0 = 月末締め）。20 なら前月21日〜当月20日を当月分とする */
@@ -266,4 +287,42 @@ export interface BillingInfo {
   hasSubscription: boolean;
   /** 支払い遅延の猶予が終わる日時（遅延中のみ） */
   graceEndsAt?: number;
+}
+
+// ---------------------------------------------------------------- 共用の打刻端末（キオスク）
+
+export interface KioskTerminal {
+  id: number;
+  name: string;
+  createdAt: number;
+  lastUsedAt?: number;
+  revoked: boolean;
+}
+
+export interface KioskHello {
+  company: string;
+  terminal: string;
+  /** 会社のタイムゾーンでの今日と、今の時刻（0:00 からの分） */
+  today: string;
+  nowMin: number;
+  /** false のとき、契約の状態により打刻できない */
+  writable: boolean;
+}
+
+export interface KioskIdentified {
+  ticket: string;
+  emp: { id: string; name: string; dept: string };
+  /** いま押せる打刻 */
+  allowed: PunchKind[];
+  /** 打刻の状況（出勤前・勤務中・休憩中・退勤済） */
+  phase: "before" | "working" | "break" | "done";
+  /** 今日（日またぎなら始業日）の出勤・退勤の時刻（0:00 からの分。25:00 は 1500） */
+  events: { in?: number; out?: number };
+}
+
+export interface KioskPunched {
+  emp: { id: string; name: string };
+  action: PunchKind;
+  /** 記録した時刻（0:00 からの分。日またぎの勤務への打刻は 1440 以上） */
+  at: number;
 }

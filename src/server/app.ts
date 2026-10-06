@@ -13,6 +13,7 @@ import type { Mailer } from "./mail";
 import { adminRoutes } from "./routes/admin";
 import { billingRoutes, webhookRoutes } from "./routes/billing";
 import { accountRoutes, publicRoutes, type Deps } from "./routes/auth";
+import { kioskAdminRoutes, kioskPublicRoutes } from "./routes/kiosk";
 import { scheduleRoutes } from "./routes/schedule";
 import { workRoutes } from "./routes/work";
 
@@ -90,6 +91,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
   const d: Deps = { manager, clockFor: deps.clockFor, config, mailer: deps.mailer, billing: deps.billing, appUrl: deps.appUrl };
   app.route("/", publicRoutes(d));
   app.route("/", webhookRoutes(d));
+  app.route("/", kioskPublicRoutes(d));
 
   // ---- 以降は要ログイン。Cookie（企業ID.トークン）から会社・社員を解決する ----
   app.use("/api/*", async (c, next) => {
@@ -129,6 +131,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
   app.route("/", accountRoutes(d));
   app.route("/", workRoutes());
   app.route("/", scheduleRoutes());
+  app.route("/", kioskAdminRoutes(d));
   app.route("/", adminRoutes(d));
   app.route("/", billingRoutes(d));
   return app;

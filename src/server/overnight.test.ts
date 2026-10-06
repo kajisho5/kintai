@@ -45,8 +45,13 @@ describe("日またぎ（夜勤）の打刻", () => {
     expect(s.events.out).toBe(1860);
     expect((await act(t, c, "out")).status).toBe(409); // 二重の退勤は拒否
 
+    // 退勤から半日をすぎた夕方には、前の勤務は表示されず、次の勤務の出勤前として扱われる
+    t.clock.set(NEXT, "21:00");
+    c = await t.login("e01");
+    const evening = (await t.call("GET", "/api/punch/today", { cookie: c })).json as PunchStateResponse;
+    expect(evening.date).toBe(NEXT);
+    expect(evening.events.in).toBeUndefined();
     t.clock.set(NEXT, "22:00");
-    c = await t.login("e01"); // セッションは12時間で切れる
     const next = (await act(t, c, "in")).json as PunchStateResponse;
     expect(next.date).toBe(NEXT);
     expect(next.offsetMin).toBe(0);

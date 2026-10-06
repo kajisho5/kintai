@@ -48,6 +48,8 @@ export interface Employee {
   email?: string;
   /** 退職日（この日まで在籍）。在職中は未設定 */
   leftOn?: string;
+  /** 位置情報による打刻場所の制限を受けない（在宅勤務・外回りなど） */
+  geoExempt?: boolean;
   /** 次回ログイン時にパスワード変更を求める（管理者が発行した一時パスワードのとき） */
   mustChangePassword?: boolean;
 }

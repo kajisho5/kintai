@@ -3,7 +3,7 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { HOLIDAYS_JP_LAST_YEAR } from "../../domain/holidays-jp";
 import { isDate, WORK_STYLES, type WorkStyle, type EmployeeAdmin, type EmployeesResponse, type ImportResponse, type ImportRowError, type SettingsResponse } from "../../domain";
-import { hashPassword } from "../auth";
+import { cardHash, hashPassword, normalizeCard } from "../auth";
 import { activeCount, ApiError, parse, requireAdmin, type Env } from "../context";
 import { audit, tx, type Db } from "../db";
 import { parseCsv } from "../csv";
@@ -26,6 +26,9 @@ interface EmpRow {
   kind: "正社員" | "パート";
   role: "admin" | "employee";
   work_style: WorkStyle;
+  geo_exempt: number;
+  punch_pin_hash: string | null;
+  card_hash: string | null;
   email: string | null;
   work_days: string;
   weekly_days: number;
@@ -47,6 +50,9 @@ const toAdminView = (r: EmpRow): EmployeeAdmin => ({
   kind: r.kind,
   role: r.role,
   workStyle: r.work_style,
+  geoExempt: r.geo_exempt === 1,
+  hasPin: r.punch_pin_hash !== null,
+  hasCard: r.card_hash !== null,
   email: r.email ?? undefined,
   workDays: JSON.parse(r.work_days) as number[],
   weeklyDays: r.weekly_days,
@@ -79,6 +85,7 @@ const fields = {
   kind: z.enum(["正社員", "パート"], "雇用区分は「正社員」か「パート」にしてください"),
   role: z.enum(["admin", "employee"]).default("employee"),
   workStyle: z.enum(WORK_STYLES, "勤務区分が正しくありません").default("fixed"),
+  geoExempt: z.boolean().default(false),
   email: z
     .string()
     .trim()
@@ -103,6 +110,7 @@ const patchSchema = z.object({
   kind: fields.kind.optional(),
   role: z.enum(["admin", "employee"]).optional(),
   workStyle: z.enum(WORK_STYLES, "勤務区分が正しくありません").optional(),
+  geoExempt: z.boolean().optional(),
   email: fields.email,
   workDays: weekdays.optional(),
   baseMin: fields.baseMin.optional(),
@@ -126,9 +134,9 @@ function defaults(e: Pick<Created, "workDays" | "baseMin" | "weeklyDays" | "week
 function insertEmployee(db: Db, e: Created, passwordHash: string, mustChange: boolean): void {
   const { weeklyDays, weeklyHours } = defaults(e);
   db.prepare(
-    `INSERT INTO employees (id, name, dept, title, kind, role, work_style, work_days, weekly_days, weekly_hours, base_min, sched_start, hired, carry, password_hash, email, must_change_password)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(e.id, e.name, e.dept, e.title, e.kind, e.role, e.workStyle, JSON.stringify(e.workDays), weeklyDays, weeklyHours, e.baseMin, e.schedStart, e.hired, e.carry, passwordHash, e.email || null, mustChange ? 1 : 0);
+    `INSERT INTO employees (id, name, dept, title, kind, role, work_style, geo_exempt, work_days, weekly_days, weekly_hours, base_min, sched_start, hired, carry, password_hash, email, must_change_password)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(e.id, e.name, e.dept, e.title, e.kind, e.role, e.workStyle, e.geoExempt ? 1 : 0, JSON.stringify(e.workDays), weeklyDays, weeklyHours, e.baseMin, e.schedStart, e.hired, e.carry, passwordHash, e.email || null, mustChange ? 1 : 0);
 }
 
 const activeAdmins = (db: Db): number => (db.prepare("SELECT COUNT(*) AS n FROM employees WHERE active = 1 AND role = 'admin'").get() as { n: number }).n;
@@ -298,6 +306,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     set("kind", p.kind);
     set("role", p.role);
     set("work_style", p.workStyle);
+    if (p.geoExempt !== undefined) set("geo_exempt", p.geoExempt ? 1 : 0);
     if (p.email !== undefined) set("email", p.email || null);
     if (p.workDays) set("work_days", JSON.stringify(p.workDays));
     set("base_min", p.baseMin);
@@ -419,6 +428,8 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
       yearlyStartMonth: s.yearlyStartMonth,
       rounding: s.rounding,
       closingDay: s.closingDay,
+      geoMode: s.geoMode,
+      geoSites: (db.prepare("SELECT id, name, lat, lng, radius_m AS radiusM FROM geo_sites ORDER BY id").all() as unknown as SettingsResponse["geoSites"]),
       flexCoreStart: s.flexCoreStart ?? undefined,
       flexCoreEnd: s.flexCoreEnd ?? undefined,
       holidays: db.prepare("SELECT date, name, kind FROM holidays WHERE date >= ? ORDER BY date").all(`${year - 1}-01-01`) as unknown as SettingsResponse["holidays"],
@@ -445,6 +456,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
         flexStartMonth: z.number().int().min(1).max(12).optional(),
         yearlyStartMonth: z.number().int().min(1).max(12).optional(),
         rounding: z.enum(["none", "month30"]).optional(),
+        geoMode: z.enum(["off", "record", "enforce"]).optional(),
         closingDay: z.number().int().min(0, "締め日は0（月末）〜28日で指定してください").max(28, "締め日は0（月末）〜28日で指定してください").optional(),
         /** コアタイム。両方を送る。null で「なし」にする */
         flexCore: z.union([z.object({ start: z.number().int().min(0).max(1439), end: z.number().int().min(1).max(1440) }), z.null()]).optional(),
@@ -459,6 +471,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     if (p.week44 !== undefined) put.run("week44", p.week44 ? "1" : "0");
     if (p.rounding !== undefined) put.run("rounding", p.rounding);
     if (p.closingDay !== undefined) put.run("closing_day", String(p.closingDay));
+    if (p.geoMode !== undefined) put.run("geo_mode", p.geoMode);
     if (p.flexMonths !== undefined) put.run("flex_months", String(p.flexMonths));
     if (p.flexStartMonth !== undefined) put.run("flex_start_month", String(p.flexStartMonth));
     if (p.yearlyStartMonth !== undefined) put.run("yearly_start_month", String(p.yearlyStartMonth));
@@ -469,6 +482,89 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     if (p.name !== undefined) manager.update(c.get("tenant").id, { name: p.name });
     audit(db, c.get("clock").now().ts, admin.id, "settings_update", p);
     return c.json({ ...settingsView(c), company: { name: p.name ?? c.get("tenant").name, code: c.get("tenant").code } });
+  });
+
+  // ---- 打刻場所（位置情報） ----
+
+  app.post("/api/settings/geo-sites", async (c) => {
+    const admin = requireAdmin(c);
+    const db = c.get("db");
+    const g = parse(
+      z.object({
+        name: z.string().trim().min(1, "名称を入力してください").max(30, "名称は30文字以内にしてください"),
+        lat: z.number().min(-90, "緯度は-90〜90で入力してください").max(90, "緯度は-90〜90で入力してください"),
+        lng: z.number().min(-180, "経度は-180〜180で入力してください").max(180, "経度は-180〜180で入力してください"),
+        radiusM: z.number().int().min(10, "半径は10〜5000メートルで指定してください").max(5000, "半径は10〜5000メートルで指定してください"),
+      }),
+      await c.req.json().catch(() => null),
+    );
+    if ((db.prepare("SELECT COUNT(*) AS n FROM geo_sites").get() as { n: number }).n >= 50) throw new ApiError(409, "打刻場所は50件までです");
+    const r = db.prepare("INSERT INTO geo_sites (name, lat, lng, radius_m) VALUES (?, ?, ?, ?)").run(g.name, g.lat, g.lng, g.radiusM);
+    audit(db, c.get("clock").now().ts, admin.id, "geo_site_add", { name: g.name });
+    return c.json({ id: Number(r.lastInsertRowid) }, 201);
+  });
+
+  app.delete("/api/settings/geo-sites/:id", (c) => {
+    const admin = requireAdmin(c);
+    const db = c.get("db");
+    const r = db.prepare("DELETE FROM geo_sites WHERE id = ?").run(Number(c.req.param("id")));
+    if (!r.changes) throw new ApiError(404, "その打刻場所は登録されていません");
+    audit(db, c.get("clock").now().ts, admin.id, "geo_site_remove", { id: Number(c.req.param("id")) });
+    return c.json({ ok: true });
+  });
+
+  // ---- 共用端末で使う、打刻用の暗証番号（PIN）と ICカード ----
+
+  /** 6桁の暗証番号。同じ数字の連続（000000 など）は避ける */
+  const newPin = (): string => {
+    for (;;) {
+      const pin = String(randomInt(0, 1_000_000)).padStart(6, "0");
+      if (!/^(\d)\1{5}$/.test(pin)) return pin;
+    }
+  };
+
+  app.post("/api/employees/:id/pin", async (c) => {
+    const admin = requireAdmin(c);
+    const db = c.get("db");
+    const cur = target(c);
+    if (cur.active !== 1) throw new ApiError(409, "退職した社員には発行できません");
+    const pin = newPin();
+    db.prepare("UPDATE employees SET punch_pin_hash = ? WHERE id = ?").run(await hashPassword(pin), cur.id);
+    audit(db, c.get("clock").now().ts, admin.id, "punch_pin_issue", { id: cur.id });
+    return c.json({ id: cur.id, pin });
+  });
+
+  app.delete("/api/employees/:id/pin", (c) => {
+    const admin = requireAdmin(c);
+    const cur = target(c);
+    c.get("db").prepare("UPDATE employees SET punch_pin_hash = NULL WHERE id = ?").run(cur.id);
+    audit(c.get("db"), c.get("clock").now().ts, admin.id, "punch_pin_remove", { id: cur.id });
+    return c.json({ ok: true });
+  });
+
+  app.put("/api/employees/:id/card", async (c) => {
+    const admin = requireAdmin(c);
+    const db = c.get("db");
+    const cur = target(c);
+    const { card } = parse(z.object({ card: z.string().min(1, "カード番号を入力してください").max(100) }), await c.req.json().catch(() => null));
+    const normalized = normalizeCard(card);
+    if (!normalized) throw new ApiError(400, "カード番号は、英数字4〜64文字で入力してください（カードリーダーでカードを読み取ると入力できます）");
+    try {
+      db.prepare("UPDATE employees SET card_hash = ? WHERE id = ?").run(cardHash(c.get("tenant").id, normalized), cur.id);
+    } catch (err) {
+      if (err instanceof Error && /UNIQUE/i.test(err.message)) throw new ApiError(409, "このカードは、ほかの社員に登録されています");
+      throw err;
+    }
+    audit(db, c.get("clock").now().ts, admin.id, "card_register", { id: cur.id });
+    return c.json({ ok: true });
+  });
+
+  app.delete("/api/employees/:id/card", (c) => {
+    const admin = requireAdmin(c);
+    const cur = target(c);
+    c.get("db").prepare("UPDATE employees SET card_hash = NULL WHERE id = ?").run(cur.id);
+    audit(c.get("db"), c.get("clock").now().ts, admin.id, "card_remove", { id: cur.id });
+    return c.json({ ok: true });
   });
 
   app.post("/api/settings/holidays", async (c) => {

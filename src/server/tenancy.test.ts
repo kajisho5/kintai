@@ -158,7 +158,7 @@ describe("マイグレーションと祝日", () => {
     db.exec(
       "INSERT INTO employees (id, name, dept, kind, role, work_days, weekly_days, weekly_hours, base_min, sched_start, hired, password_hash) VALUES ('x', '旧データ', '営業', '正社員', 'admin', '[1]', 1, 8, 480, 540, '2020-04-01', 'h')",
     );
-    expect(migrate(db)).toEqual([2, 3, 4, 5]);
+    expect(migrate(db)).toEqual([2, 3, 4, 5, 6]);
     expect(db.prepare("SELECT work_style AS s FROM employees WHERE id = 'x'").get()).toEqual({ s: "fixed" }); // 既存の社員は通常の勤務区分
     const row = db.prepare("SELECT name, must_change_password AS m, email FROM employees WHERE id = 'x'").get() as { name: string; m: number; email: string | null };
     expect(row).toEqual({ name: "旧データ", m: 0, email: null });
