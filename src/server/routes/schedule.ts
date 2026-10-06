@@ -89,6 +89,13 @@ export function parseScheduleCsv(text: string): { items: ScheduleItem[]; errors:
   return { items, errors };
 }
 
+/** 監査ログ用: 誰の・いつからいつまでのシフトを、何件変えたか（所定労働時間が変わるので、あとから追えるようにする） */
+function auditDetail(items: ScheduleItem[]): { count: number; emps: string[]; empsTotal: number; from: string; to: string } {
+  const emps = [...new Set(items.map((i) => i.empId))].sort();
+  const dates = items.map((i) => i.date).sort();
+  return { count: items.length, emps: emps.slice(0, 30), empsTotal: emps.length, from: dates[0]!, to: dates[dates.length - 1]! };
+}
+
 function apply(db: Db, items: ScheduleItem[]): void {
   const put = db.prepare("INSERT OR REPLACE INTO schedules (emp_id, date, kind, start, end, break_min) VALUES (?, ?, ?, ?, ?, ?)");
   const del = db.prepare("DELETE FROM schedules WHERE emp_id = ? AND date = ?");
@@ -166,7 +173,7 @@ export function scheduleRoutes(): Hono<Env> {
     const errors = validate(db, now.date, body.items);
     if (errors.length) throw new ApiError(400, `${errors[0]!.row - 1}件目: ${errors[0]!.message}`);
     tx(db, () => apply(db, body.items));
-    audit(db, now.ts, admin.id, "schedule_update", { count: body.items.length });
+    audit(db, now.ts, admin.id, "schedule_update", auditDetail(body.items));
     return c.json({ ok: true, count: body.items.length });
   });
 
@@ -180,7 +187,7 @@ export function scheduleRoutes(): Hono<Env> {
     if (errors.length) return c.json({ ok: false, errors: errors.slice(0, 50) } satisfies ScheduleImportResponse);
     if (body.dryRun) return c.json({ ok: true, dryRun: true, count: items.length } satisfies ScheduleImportResponse);
     tx(db, () => apply(db, items));
-    audit(db, now.ts, admin.id, "schedule_import", { count: items.length });
+    audit(db, now.ts, admin.id, "schedule_import", auditDetail(items));
     return c.json({ ok: true, dryRun: false, count: items.length } satisfies ScheduleImportResponse);
   });
 

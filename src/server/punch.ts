@@ -1,4 +1,4 @@
-import { addDays, deriveDay, MAX_SHIFT_MIN, ymOfDate, type Employee, type PunchKind, type PunchStateResponse } from "../domain";
+import { addDays, deriveDay, MAX_SHIFT_MIN, STALE_SHIFT_MIN, ymOfDate, type Employee, type PunchKind, type PunchStateResponse } from "../domain";
 import type { Clock } from "./clock";
 import { ApiError } from "./context";
 import { audit, tx, type Db } from "./db";
@@ -48,12 +48,15 @@ export function recordPunch(db: Db, clock: Clock, me: Employee, action: PunchKin
 
   // 位置情報の判定（共用端末は、置いてある場所が打刻の場所なので対象外）
   let geo: GeoResult | null = null;
+  let sitesCount = 0;
   if (source === "punch" && settings.geoMode !== "off") {
     const sites = db.prepare("SELECT lat, lng, radius_m FROM geo_sites").all() as unknown as { lat: number; lng: number; radius_m: number }[];
+    sitesCount = sites.length;
     geo = opts.geo ? evaluateGeo(sites, opts.geo) : "unknown";
-    if (settings.geoMode === "enforce" && !exempt && sites.length) {
-      if (!opts.geo) throw new ApiError(403, "位置情報を取得できないため、打刻できません。ブラウザの位置情報の許可を確認してください", "GEO_REQUIRED");
-      if (geo === "out") throw new ApiError(403, "勤務地の範囲外のため、打刻できません", "GEO_OUTSIDE");
+    // 制限は出勤だけ。退勤・休憩は、範囲外でも打刻でき、範囲外として記録・表示される（外出先や帰宅後に退勤を押す場合があるため）
+    if (settings.geoMode === "enforce" && action === "in" && !exempt && sites.length) {
+      if (!opts.geo) throw new ApiError(403, "位置情報を取得できないため、出勤を打刻できません。ブラウザの位置情報の許可を確認してください", "GEO_REQUIRED");
+      if (geo === "out") throw new ApiError(403, "勤務地の範囲外のため、出勤を打刻できません", "GEO_OUTSIDE");
     }
   }
 
@@ -66,8 +69,10 @@ export function recordPunch(db: Db, clock: Clock, me: Employee, action: PunchKin
     const prev = eventsOn(yesterday);
     // 昨日の出勤から退勤していない勤務が続いている（日またぎ）なら、その勤務への打刻とする
     const carrying = today.in === undefined && prev.in !== undefined && prev.out === undefined && 1440 + min - prev.in <= MAX_SHIFT_MIN;
-    if (action === "in" && carrying) throw new ApiError(409, "前の勤務（昨日の出勤）が退勤になっていません。先に退勤を記録してください");
-    const target = carrying ? { date: yesterday, off: 1440, d: prev } : { date: now.date, off: 0, d: today };
+    // 前の勤務が、日またぎとしては長すぎる（退勤の打刻漏れの可能性が高い）なら、新しい出勤を受け付ける。前の勤務は「退勤打刻なし」として残り、修正申請の対象になる
+    if (action === "in" && carrying && 1440 + min - (prev.in ?? 0) <= STALE_SHIFT_MIN) throw new ApiError(409, "前の勤務（昨日の出勤）が退勤になっていません。先に退勤を記録してください");
+    const carryingNow = carrying && !(action === "in");
+    const target = carryingNow ? { date: yesterday, off: 1440, d: prev } : { date: now.date, off: 0, d: today };
     const d = target.d;
     const at = min + target.off;
     if (action === "in" && d.in !== undefined) throw new ApiError(409, "本日はすでに出勤を記録しています");
@@ -77,7 +82,8 @@ export function recordPunch(db: Db, clock: Clock, me: Employee, action: PunchKin
     if (action === "break_end" && d.openBreak === undefined) throw new ApiError(409, "休憩を開始していません");
     const ins = db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, source, created_at, lat, lng, accuracy, geo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     // 位置情報は、会社が確認を有効にしているときだけ保存する（無効なら、送られてきても捨てる）
-    const stored = geo !== null ? opts.geo : undefined;
+    // （打刻場所が1件も登録されていないときは、判定に使わないので、保存しない）
+    const stored = geo !== null && sitesCount > 0 ? opts.geo : undefined;
     const put = (kind: PunchKind) => ins.run(me.id, target.date, kind, at, source, now.ts, stored?.lat ?? null, stored?.lng ?? null, stored?.accuracy ?? null, geo);
     // 休憩中の退勤は、休憩を退勤時刻で閉じてから記録する
     if (action === "out" && d.openBreak !== undefined) put("break_end");
@@ -102,11 +108,13 @@ export function punchState(snap: Snapshot, me: Employee): PunchStateResponse {
     events: { in: d.in, out: d.out, breaks: d.breaks, openBreak: d.openBreak },
     day,
     // 月をまたいで終わる日またぎの勤務は、前の月の勤務として扱うので、今月の累計には足さない
-    monthOvertimeMin: month.result.overtimeMin + (ymOfDate(shift.date, snap.settings.closingDay) === ym ? day.dailyOvertimeMin : 0),
+    // 集計済みの月（退勤して日付が変わった勤務）には、すでにこの勤務が入っているので、足さない
+    monthOvertimeMin: month.result.overtimeMin + (ymOfDate(shift.date, snap.settings.closingDay) === ym && (shift.date === snap.today || shift.open) ? day.dailyOvertimeMin : 0),
     outlook: risk.outlook,
     riskLevel: risk.level,
     leaveRemaining: ledger.leaveOf(me).remaining,
     geo: geoInfo(snap, me),
+    staleShift: shift.open && shift.offset > 0 && 1440 + snap.nowMin - (d.in ?? 0) > STALE_SHIFT_MIN ? true : undefined,
   };
 }
 

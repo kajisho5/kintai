@@ -1,4 +1,5 @@
-import { Ledger, addDays, type Rounding, fiscalStartYm, flexPeriodOfYm, monthsBetween, periodOfYm, yearlyPeriodOfYm, ymOfDate, type Employee, type LeaveRow, type PunchEvent, type ScheduleRow, type WorkStyle } from "../domain";
+import { Ledger, addDays, addYm, type Rounding, fiscalStartYm, flexPeriodOfYm, monthsBetween, periodOfYm, yearlyPeriodOfYm, ymOfDate, type Employee, type LeaveRow, type PunchEvent, type ScheduleRow, type WorkStyle } from "../domain";
+import { weekStart } from "../engine";
 import type { Clock } from "./clock";
 import type { Db } from "./db";
 
@@ -117,7 +118,10 @@ export interface Snapshot {
   employees: Employee[];
   /** 退職者を含む全社員 */
   allEmployees: Employee[];
+  /** 今の協定期間の月 */
   fyMonths: string[];
+  /** 画面・CSV で選べる月（協定期間の月と、その直前の月＝前の協定期間の最終月） */
+  pickerMonths: string[];
   /** 今日が属する月（締め日があれば、締め日の翌日以降は翌月分） */
   currentYm: string;
   /** 登録されている打刻場所の数 */
@@ -126,19 +130,27 @@ export interface Snapshot {
   today: string;
 }
 
-/** 現在の協定期間ぶんの打刻を読み込み、集計用の Ledger を作る */
-export function snapshot(db: Db, clock: Clock): Snapshot {
+/**
+ * 現在の協定期間ぶんの打刻を読み込み、集計用の Ledger を作る。
+ * 直前の月（前の協定期間の最終月）も選べるよう、その月の初めから読む。backTo にその月を指定すると、
+ * その月の36協定のチェックに必要な、前の協定期間ぶんも読み込む（指定しなければ、直前の月の36協定の判定は不完全になる）。
+ */
+export function snapshot(db: Db, clock: Clock, opts: { backTo?: string } = {}): Snapshot {
   const now = clock.now();
   const settings = loadSettings(db);
   const currentYm = ymOfDate(now.date, settings.closingDay);
   const fyStart = fiscalStartYm(`${currentYm}-01`, settings.fyStartMonth);
-  // 協定期間の初日に日またぎで終わる勤務のため、前日から読む。1年単位の変形期間・フレックスの清算期間が協定期間より前から始まる場合は、そこから読む
+  const prevYm = addYm(fyStart, -1);
+  const back = opts.backTo === prevYm ? prevYm : undefined;
+  const loadStartYm = back ? fiscalStartYm(`${back}-01`, settings.fyStartMonth) : prevYm;
+  // 読み込みの開始日。1年単位の変形期間・フレックスの清算期間・週（月曜始まり）が、その月より前から始まる場合は、そこから読む。
+  // 日またぎで終わる勤務のため、さらに前日から読む
   const earliest = [
-    periodOfYm(fyStart, settings.closingDay).start,
-    yearlyPeriodOfYm(currentYm, settings.yearlyStartMonth, settings.closingDay).start,
-    flexPeriodOfYm(currentYm, settings.flexStartMonth, settings.flexMonths, settings.closingDay).start,
+    periodOfYm(loadStartYm, settings.closingDay).start,
+    yearlyPeriodOfYm(loadStartYm, settings.yearlyStartMonth, settings.closingDay).start,
+    flexPeriodOfYm(loadStartYm, settings.flexStartMonth, settings.flexMonths, settings.closingDay).start,
   ].sort()[0]!;
-  const from = addDays(earliest, -1);
+  const from = addDays(weekStart(earliest, 1), -1);
   const events = (
     db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE date >= ? ORDER BY seq").all(from) as unknown as PunchEvent[]
   ).map((e) => ({ ...e }));
@@ -162,5 +174,5 @@ export function snapshot(db: Db, clock: Clock): Snapshot {
     schedules,
   });
   const fyMonths = monthsBetween(fyStart, currentYm);
-  return { ledger, dateOf: clock.dateOf, settings, employees: loadEmployees(db), allEmployees: loadEmployees(db, true), fyMonths, currentYm, geoSiteCount: (db.prepare("SELECT COUNT(*) AS n FROM geo_sites").get() as { n: number }).n, nowMin: now.min, today: now.date };
+  return { ledger, dateOf: clock.dateOf, settings, employees: loadEmployees(db), allEmployees: loadEmployees(db, true), fyMonths, pickerMonths: [prevYm, ...fyMonths], currentYm, geoSiteCount: (db.prepare("SELECT COUNT(*) AS n FROM geo_sites").get() as { n: number }).n, nowMin: now.min, today: now.date };
 }

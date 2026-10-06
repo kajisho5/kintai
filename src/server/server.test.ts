@@ -118,8 +118,11 @@ describe("集計", () => {
     const row = list.rows.find((r) => r.emp.id === "e06")!;
     const d = (await t.call("GET", "/api/attendance/e06?ym=2026-09", { cookie: c })).json as AttendanceDetailResponse;
     expect(d.month.overtimeMin).toBe(row.month.overtimeMin);
+    // 日別の「時間外」は、その日に発生した時間外（日8時間超 + 週40時間超が、超えた日に付く）。合計は月の時間外と一致する
     const daily = d.days.reduce((s, x) => s + (x.result?.dailyOvertimeMin ?? 0), 0);
-    expect(d.month.overtimeMin - daily).toBe(d.month.weeklyOvertimeMin);
+    expect(daily).toBe(d.month.overtimeMin);
+    expect(d.month.weeklyOvertimeMin).toBeGreaterThanOrEqual(0);
+    expect(d.month.weeklyOvertimeMin).toBeLessThanOrEqual(d.month.overtimeMin);
     expect(row.month.overtimeMin).toBeGreaterThan(45 * 60);
   });
 

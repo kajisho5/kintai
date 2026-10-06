@@ -141,7 +141,7 @@ function WorkRulesPanel({ s, onSaved }: { s: SettingsResponse; onSaved: () => vo
           <input type="checkbox" checked={week44} onChange={(e) => setWeek44(e.target.checked)} />
           <span>
             <b>週の法定労働時間が44時間（特例措置対象事業場）</b>
-            <small className="hint">常時10人未満の、商業・映画演劇業（映画製作を除く）・保健衛生業・接客娯楽業の事業場だけが対象です。該当しない場合はオフのままにしてください（週40時間）。</small>
+            <small className="hint">常時10人未満の、商業・映画演劇業（映画製作を除く）・保健衛生業・接客娯楽業の事業場だけが対象です。該当しない場合はオフのままにしてください（週40時間）。通常の勤務・1か月単位の変形・清算期間が1か月以内のフレックスに適用し、1年単位・1週間単位の変形と、清算期間が1か月を超えるフレックスは週40時間のままです（労基則25条の2）。</small>
           </span>
         </label>
         <div className="row2">
@@ -261,9 +261,9 @@ function GeoPanel({ s, onChanged }: { s: SettingsResponse; onChanged: () => void
           <div className="radio-row" style={{ flexWrap: "wrap" }}>
             <label><input type="radio" name="geo" checked={mode === "off"} onChange={() => void saveMode("off")} />確認しない</label>
             <label><input type="radio" name="geo" checked={mode === "record"} onChange={() => void saveMode("record")} />記録する（範囲外は勤怠に表示）</label>
-            <label><input type="radio" name="geo" checked={mode === "enforce"} onChange={() => void saveMode("enforce")} />範囲外では打刻できない</label>
+            <label><input type="radio" name="geo" checked={mode === "enforce"} onChange={() => void saveMode("enforce")} />範囲外では出勤できない</label>
           </div>
-          <small className="hint">位置情報は、打刻の瞬間にだけ取得し、勤務場所の確認にのみ使います。社員への周知と、プライバシーポリシーへの記載が必要です。ブラウザの位置情報は端末側で書き換えられるため、不正を完全に防ぐものではなく、確認の目安です。在宅勤務・外回りの社員は、社員管理で制限の対象外にできます。共用の打刻端末は、この確認の対象外です。</small>
+          <small className="hint">位置情報は、打刻の瞬間にだけ取得し、勤務場所の確認にのみ使います。社員への周知と、プライバシーポリシーへの記載が必要です。ブラウザの位置情報は端末側で書き換えられるため、不正を完全に防ぐものではなく、確認の目安です。在宅勤務・外回りの社員は、社員管理で制限の対象外にできます。共用の打刻端末は、この確認の対象外です。「範囲外では出勤できない」でも、退勤・休憩は止めず、範囲外として勤怠に表示します。</small>
           <span role="status" style={{ color: msg === "保存しました" ? "var(--matsu)" : "var(--beni)", fontWeight: 700 }}>{msg}</span>
         </fieldset>
         {mode !== "off" && s.geoSites.length === 0 ? <div className="status-error" role="alert">打刻場所が登録されていません。登録するまでは、位置情報の確認は行われません。</div> : null}

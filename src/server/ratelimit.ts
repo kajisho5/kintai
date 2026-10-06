@@ -25,6 +25,14 @@ export class RateLimiter {
     }
   }
 
+  /** 直近の1件の記録を取り消す（先に記録しておいた試行が、成功だったとき） */
+  refund(key: string, now: number): void {
+    const list = this.recent(key, now);
+    list.pop();
+    if (list.length) this.hits.set(key, list);
+    else this.hits.delete(key);
+  }
+
   retryAfterMin(key: string, now: number): number {
     const list = this.recent(key, now);
     return list.length ? Math.max(1, Math.ceil((list[0]! + this.windowMs - now) / 60000)) : 0;

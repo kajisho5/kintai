@@ -35,6 +35,8 @@ export interface PeriodOptions {
   weekStartsOn?: 0 | 1;
   /** 週の法定労働時間（既定 40時間。特例措置対象事業場は 44時間） */
   weeklyLegalMin?: Minutes;
+  /** false なら、期間（総枠）の判定をしない。通常の勤務（日・週の判定だけ）で、週をまたぐ月の区切りを扱うときに使う */
+  periodLimit?: boolean;
 }
 
 /** 法定労働時間の総枠。1分未満は切り捨てる（例: 31日で 177.1 時間） */
@@ -69,7 +71,7 @@ export function calcVariablePeriod(inputs: PeriodDayInput[], opts: PeriodOptions
     weeks.set(k, w);
   }
 
-  const frameMin = frameOf(inputs.length, weeklyLegal);
+  const frameMin = opts.periodLimit === false ? Number.MAX_SAFE_INTEGER : frameOf(inputs.length, weeklyLegal);
   let cum = 0;
   let countedPeriod = 0;
   let ordinaryMin = 0;
@@ -98,6 +100,8 @@ export function calcVariablePeriod(inputs: PeriodDayInput[], opts: PeriodOptions
 
 export interface FlexOptions {
   weeklyLegalMin?: Minutes;
+  /** 清算期間が1か月を超えるか（月ごとの週平均50時間の上限を判定するか）。省略時は、期間内の月の数が2以上かどうか。途中入社などで在籍が1か月だけでも、設定どおりに判定するために指定する */
+  multiMonth?: boolean;
   /** 日付 → 月の区分（清算期間が1か月を超えるとき、月ごとの上限を判定する単位）。既定は暦月 */
   groupOf?: (date: string) => string;
 }
@@ -115,7 +119,7 @@ export function calcFlexPeriod(inputs: DayInput[], opts: FlexOptions = {}): Peri
     g.days++;
     groups.set(groupOf(d.date), g);
   }
-  const multi = groups.size > 1;
+  const multi = opts.multiMonth ?? groups.size > 1;
 
   const frameMin = frameOf(inputs.length, weeklyLegal);
   let cum = 0;

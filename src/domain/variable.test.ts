@@ -201,3 +201,56 @@ describe("締め日（月の区切り）", () => {
     expect(y.period).toMatchObject({ start: "2026-03-21", end: "2027-03-20" }); // 4月分 = 3/21〜4/20 から12か月
   });
 });
+
+describe("通常の勤務: 週をまたぐ月の区切り・法定内との整合・週44時間の適用範囲", () => {
+  // 9/28(月)〜10/2(金) 各8時間 + 10/3(土) 4時間 = 週44時間。週が9月と10月にまたがる
+  const ev = [...range("2026-09-28", "2026-10-02").flatMap((d) => work(d, h(8))), ...work("2026-10-03", h(4))];
+
+  it("週が月をまたいでも、週40時間超は消えずに、超えた日（10/3）の月に付く", () => {
+    const l = ledger(ev, {}, "2026-11-05");
+    expect(l.monthOf(base, "2026-09").result.overtimeMin).toBe(0);
+    expect(l.monthOf(base, "2026-10").result.overtimeMin).toBe(h(4));
+    expect(l.monthOf(base, "2026-10").result.weeklyOvertimeMin).toBe(h(4));
+  });
+
+  it("締め日が週の途中でも、同様に数えられる（2日締めの場合、10/3 は11月分）", () => {
+    const l = ledger(ev, { closingDay: 2 }, "2026-11-05"); // 締め日が週の途中（10/2）。10月分 = 9/3〜10/2、11月分 = 10/3〜11/2
+    expect(l.monthOf(base, "2026-10").result.overtimeMin).toBe(0);
+    expect(l.monthOf(base, "2026-11").result.overtimeMin).toBe(h(4));
+  });
+
+  it("法定内 + 時間外 = 実働（二重に数えない）。日別の時間外の合計は月の時間外と一致する", () => {
+    const l = ledger([...ev, ...work("2026-10-05", h(10))], {}, "2026-11-05");
+    const m = l.monthOf(base, "2026-10");
+    const legalIn = m.result.days.reduce((s, d) => s + d.legalInMin, 0);
+    expect(legalIn + m.result.overtimeMin).toBe(m.result.workMin - m.result.legalHolidayMin);
+    expect(m.result.days.reduce((s, d) => s + d.dailyOvertimeMin, 0)).toBe(m.result.overtimeMin);
+  });
+
+  it("週44時間の特例は、通常・1か月単位の変形・清算期間1か月のフレックスだけ。1年単位・1週間単位・清算期間が1か月を超えるフレックスは週40時間", () => {
+    const opts = { weeklyLegalMin: h(44) };
+    // 通常: 週44時間は時間外なし
+    expect(ledger(ev, opts, "2026-11-05").monthOf(base, "2026-10").result.overtimeMin).toBe(0);
+    // 1年単位: 週40時間
+    const yearlySched = range("2026-09-28", "2026-10-02").map((d) => shift(d, h(9), h(17)));
+    expect(ledger(ev, { ...opts, schedules: yearlySched }, "2026-11-05").monthOf(as("yearly"), "2026-10").result.overtimeMin).toBe(h(4));
+    expect(ledger(ev, { ...opts, schedules: yearlySched }, "2026-11-05").monthOf(as("monthly"), "2026-10").result.overtimeMin).toBe(0);
+    // 1週間単位: 週40時間
+    expect(ledger(ev, { ...opts, schedules: yearlySched }, "2026-11-05").monthOf(as("weekly"), "2026-10").result.overtimeMin).toBe(h(4));
+    // フレックス: 総枠の週あたりの時間も、清算期間で変わる
+    const flex1 = ledger([], { ...opts, flexMonths: 1 }, "2026-10-05").monthOf(as("flex"), "2026-10").period!.frameMin;
+    const flex3 = ledger([], { ...opts, flexMonths: 3, flexStartMonth: 10 }, "2026-10-05").monthOf(as("flex"), "2026-10").period!.frameMin;
+    expect(flex1).toBe(Math.floor((h(44) * 31) / 7));
+    expect(flex3).toBe(Math.floor((h(40) * 92) / 7));
+  });
+
+  it("フレックス（清算期間3か月）で、最後の1か月だけ在籍した社員（途中入社）も、月ごとの週平均50時間の上限が判定される", () => {
+    // 12月に入社。12月だけで 230時間働く（12月の上限 = floor(3000×31/7) = 13285分 = 221:25）
+    const days = range("2026-12-01", "2026-12-31").filter((d) => dowOf(d) >= 1 && dowOf(d) <= 5);
+    const ev2 = days.flatMap((d) => work(d, h(10) + 30));
+    const l = ledger(ev2, { flexMonths: 3, flexStartMonth: 10 }, "2027-01-05");
+    const m = l.monthOf(as("flex", { hired: "2026-12-01" }), "2026-12");
+    const total = days.length * (h(10) + 30);
+    expect(m.result.overtimeMin).toBeGreaterThanOrEqual(total - 13285);
+  });
+});

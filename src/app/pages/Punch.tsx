@@ -38,7 +38,8 @@ export function Punch() {
   const phase = ev.in === undefined ? "before" : ev.out !== undefined ? "done" : onBreak ? "break" : "working";
   const enabled: Record<Act, boolean> = {
     // 日またぎの勤務を退勤したあとの表示でも、次の勤務の出勤は押せる
-    in: phase === "before" || (phase === "done" && s.offsetMin > 0),
+    // 退勤の無い勤務が長く続いている（打刻漏れの可能性）ときも、新しい勤務の出勤を押せる
+    in: phase === "before" || (phase === "done" && s.offsetMin > 0) || !!s.staleShift,
     break_start: phase === "working",
     break_end: phase === "break",
     out: phase === "working" || phase === "break",
@@ -133,9 +134,14 @@ export function Punch() {
               <span><b>休憩終了</b><small>{last("break_end")}</small></span>
             </button>
           </div>
+          {s.staleShift ? (
+            <p className="note" style={{ textAlign: "center", margin: "0 16px 8px", color: "var(--beni)" }} role="alert">
+              前の勤務（{jpDate(s.date)}の出勤）の退勤が記録されていません。この出勤はそのままにして、新しい勤務を始められます。前の勤務の退勤は、あとで「打刻修正」の申請をしてください。
+            </p>
+          ) : null}
           {s.geo.mode !== "off" ? (
             <p className="note" style={{ textAlign: "center", margin: "0 16px 8px" }}>
-              打刻の確認のため、打刻の瞬間の位置情報を使います{s.geo.required ? "（打刻には位置情報の許可が必要です）" : "（許可しなくても打刻できます）"}。位置情報は、勤務場所の確認にだけ使います。
+              打刻の確認のため、打刻の瞬間の位置情報を使います{s.geo.required ? "（出勤の打刻には位置情報の許可が必要です）" : "（許可しなくても打刻できます）"}。位置情報は、勤務場所の確認にだけ使います。
             </p>
           ) : null}
           <div className="toast" role="status" aria-live="polite">{toast}</div>

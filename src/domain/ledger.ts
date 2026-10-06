@@ -4,7 +4,6 @@ import {
   LIMITS_YEARLY_VARIABLE,
   calcDay,
   calcFlexPeriod,
-  calcMonth,
   calcVariablePeriod,
   check36,
   grantDays,
@@ -45,6 +44,8 @@ const SCHED_GRACE_MIN = 15;
 export const MAX_SHIFT_MIN = 20 * 60;
 /** 日またぎの勤務を退勤したあと、その勤務を「退勤済み」として表示し続ける時間 */
 export const CLOSED_SHIFT_DISPLAY_MIN = 12 * 60;
+/** 退勤の無い勤務が、これを超えて続いているときは、日またぎではなく退勤の打刻漏れの可能性が高いとして、新しい出勤も受け付ける */
+export const STALE_SHIFT_MIN = 12 * 60;
 
 interface PeriodComputed {
   per: { start: string; end: string };
@@ -181,8 +182,15 @@ export class Ledger {
     return dowOf(date) === this.legalDow;
   }
 
-  private get weeklyLegalMin(): number {
-    return this.opts.weeklyLegalMin ?? LEGAL_WEEKLY_MIN;
+  /**
+   * 週の法定労働時間。特例措置対象事業場の週44時間は、通常の勤務・1か月単位の変形・清算期間が1か月以内のフレックスに限る
+   * （労基則25条の2）。1年単位の変形・1週間単位の変形・清算期間が1か月を超えるフレックスは、週40時間。
+   */
+  private weeklyLegalMinFor(emp: Employee): number {
+    const special = this.opts.weeklyLegalMin ?? LEGAL_WEEKLY_MIN;
+    if (emp.workStyle === "yearly" || emp.workStyle === "weekly") return LEGAL_WEEKLY_MIN;
+    if (emp.workStyle === "flex" && (this.opts.flexMonths ?? 1) > 1) return LEGAL_WEEKLY_MIN;
+    return special;
   }
 
   // ------------------------------------------------------------ 日
@@ -252,35 +260,23 @@ export class Ledger {
           .reduce((s, d) => s + (leaveMap.get(d) ?? 0), 0)
       : 0;
 
-    let result: MonthResult;
-    let period: PeriodInfo | undefined;
-    if (emp.workStyle === "fixed") {
-      const input = (p: DayPlan): DayInput => ({
-        date: p.date,
-        work: { start: p.start!, end: p.end! },
-        breaks: p.breaks,
-        isLegalHoliday: p.isLegalHoliday,
-        nextIsLegalHoliday: p.nextIsLegalHoliday,
-      });
-      result = calcMonth(worked.map(input), 1, this.weeklyLegalMin);
-    } else {
-      const comp = this.periodComputed(emp, this.periodOf(emp, ym));
-      // 時間外は「発生した日」に付くので、その月の勤務日の分を合計すれば、月の時間外になる
-      const days = worked.map((p) => comp.byDate.get(p.date)!).map((d) => ({ ...d, dailyOvertimeMin: d.overtimeMin }));
-      const sum = (f: (d: PeriodDayResult) => number) => days.reduce((n, d) => n + f(d), 0);
-      const overtimeMin = sum((d) => d.overtimeMin);
-      result = {
-        days,
-        workMin: sum((d) => d.workMin),
-        overtimeMin,
-        weeklyOvertimeMin: sum((d) => d.weeklyOvertimeMin),
-        periodOvertimeMin: sum((d) => d.periodOvertimeMin),
-        legalHolidayMin: sum((d) => d.legalHolidayMin),
-        nightMin: sum((d) => d.nightMin),
-        overtimeOver60hMin: Math.max(0, overtimeMin - 60 * 60),
-      };
-      period = emp.workStyle === "weekly" ? undefined : this.periodInfo(emp, comp);
-    }
+    // 週をまたぐ月の区切り（締め日・月初・月末）でも、週の判定が途切れないよう、月の前後の週も含めた期間で計算する。
+    // 時間外は「発生した日」に付くので、その月の勤務日の分を合計すれば、月の時間外になる
+    const comp = this.periodComputed(emp, this.periodOf(emp, ym));
+    const days = worked.map((p) => comp.byDate.get(p.date)!).map((d) => ({ ...d, dailyOvertimeMin: d.overtimeMin }));
+    const sum = (f: (d: PeriodDayResult) => number) => days.reduce((n, d) => n + f(d), 0);
+    const overtimeMin = sum((d) => d.overtimeMin);
+    const result: MonthResult = {
+      days,
+      workMin: sum((d) => d.workMin),
+      overtimeMin,
+      weeklyOvertimeMin: sum((d) => d.weeklyOvertimeMin),
+      periodOvertimeMin: sum((d) => d.periodOvertimeMin),
+      legalHolidayMin: sum((d) => d.legalHolidayMin),
+      nightMin: sum((d) => d.nightMin),
+      overtimeOver60hMin: Math.max(0, overtimeMin - 60 * 60),
+    };
+    const period: PeriodInfo | undefined = emp.workStyle === "fixed" || emp.workStyle === "weekly" ? undefined : this.periodInfo(emp, comp);
     const data: MonthData = {
       ym,
       period,
@@ -308,8 +304,13 @@ export class Ledger {
         const p = periodOfYm(ym, this.closing);
         return { start: weekStart(p.start, 1), end: addDays(weekStart(p.end, 1), 6) };
       }
-      default:
+      case "monthly":
         return periodOfYm(ym, this.closing);
+      default: {
+        // 通常の勤務: 月の前後の週も含める（週の判定が、月の区切りで途切れないように）
+        const p = periodOfYm(ym, this.closing);
+        return { start: weekStart(p.start, 1), end: addDays(weekStart(p.end, 1), 6) };
+      }
     }
   }
 
@@ -322,13 +323,15 @@ export class Ledger {
       breaks: p?.kind === "work" ? p.breaks : undefined,
       isLegalHoliday: this.isLegalHoliday(emp, date),
       nextIsLegalHoliday: this.isLegalHoliday(emp, addDays(date, 1)),
-      scheduledMin: this.plannedShift(emp, date)?.workMin ?? 0,
+      // 通常の勤務は、日8時間・週40時間の固定のしきい値で判定する（シフトの所定時間は使わない）
+      scheduledMin: emp.workStyle === "fixed" ? undefined : (this.plannedShift(emp, date)?.workMin ?? 0),
     };
   }
 
   private computePeriod(emp: Employee, inputs: PeriodDayInput[]): PeriodResult {
-    const weeklyLegalMin = this.weeklyLegalMin;
-    if (emp.workStyle === "flex") return calcFlexPeriod(inputs, { weeklyLegalMin, groupOf: (d) => ymOfDate(d, this.closing) });
+    const weeklyLegalMin = this.weeklyLegalMinFor(emp);
+    if (emp.workStyle === "flex") return calcFlexPeriod(inputs, { weeklyLegalMin, groupOf: (d) => ymOfDate(d, this.closing), multiMonth: (this.opts.flexMonths ?? 1) > 1 });
+    if (emp.workStyle === "fixed") return calcVariablePeriod(inputs, { weeklyLegalMin, periodLimit: false });
     if (emp.workStyle !== "weekly") return calcVariablePeriod(inputs, { weeklyLegalMin });
     // 1週間単位: 週ごとに独立して計算する
     const days: PeriodDayResult[] = [];
@@ -352,8 +355,10 @@ export class Ledger {
     const hit = this.periodCache.get(key);
     if (hit) return hit;
     // 入社日より前・退職日より後は、期間に含めない（総枠は在籍した日数で按分される）
-    const from = per.start > emp.hired ? per.start : emp.hired;
-    const to = emp.leftOn && emp.leftOn < per.end ? emp.leftOn : per.end;
+    // （通常の勤務は、週の判定のため、在籍前後の日も含める。その日に勤務の実績はない）
+    const clip = emp.workStyle !== "fixed";
+    const from = clip && per.start < emp.hired ? emp.hired : per.start;
+    const to = clip && emp.leftOn && emp.leftOn < per.end ? emp.leftOn : per.end;
     const dates = from <= to ? datesBetween(from, to) : [];
     const result = this.computePeriod(emp, dates.map((d) => this.periodInput(emp, d)));
     const byDate = new Map(dates.map((d, i) => [d, result.days[i]!]));
@@ -460,13 +465,14 @@ export class Ledger {
       return { month: x, overtimeMin: r.overtimeMin, legalHolidayMin: r.legalHolidayMin };
     });
     // 対象期間が3か月を超える1年単位の変形労働時間制は、限度時間が月42時間・年320時間になる
-    const alerts = check36(history, { hasSpecialClause: this.opts.specialClause, limits: emp.workStyle === "yearly" ? LIMITS_YEARLY_VARIABLE : LIMITS_STANDARD });
+    const limits = emp.workStyle === "yearly" ? LIMITS_YEARLY_VARIABLE : LIMITS_STANDARD;
+    const alerts = check36(history, { hasSpecialClause: this.opts.specialClause, limits });
     const level: RiskLevel = alerts.some((a) => a.level === "violation") ? "violation" : alerts.length ? "warning" : "ok";
     const risk: Risk = {
       level,
       alerts,
       yearOvertime: history.reduce((s, m) => s + m.overtimeMin, 0),
-      over45Count: history.filter((m) => m.overtimeMin > 45 * 60).length,
+      over45Count: history.filter((m) => m.overtimeMin > limits.monthMin).length,
       outlook,
     };
     this.riskCache.set(key, risk);

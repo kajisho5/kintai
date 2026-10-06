@@ -11,12 +11,10 @@ import { Empty, Figure, Gauge, MonthPicker, Pill, RiskPill, Who } from "../ui/ki
 
 const RISK_ORDER = { ok: 0, warning: 1, violation: 2 } as const;
 
-/** 勤怠は締め済みの前の月から見る（前の月が協定期間に無ければ当月）。currentYm は今日が属する月（締め日があれば翌月分のことがある） */
-export function defaultYm(currentYm: string, fyStartMonth = 4): string {
+/** 勤怠は、締め済みの前の月から見る。currentYm は今日が属する月（締め日があれば翌月分のことがある） */
+export function defaultYm(currentYm: string): string {
   const [y, m] = currentYm.split("-").map(Number) as [number, number];
-  const prev = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
-  const fyStartYear = m >= fyStartMonth ? y : y - 1;
-  return prev >= `${fyStartYear}-${String(fyStartMonth).padStart(2, "0")}` ? prev : currentYm;
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
 }
 
 // ---------------------------------------------------------------- 一覧
@@ -177,7 +175,7 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
 
   const exportCsv = () =>
     csvDownload(`勤怠明細_${emp.name.replace(/\s/g, "")}_${ym}.csv`, [
-      ["日付", "区分", "出勤", "退勤", "休憩(分)", "実働(分)", "法定内(分)", variable ? "時間外(分)" : "日単位時間外(分)", "深夜(分)", "法定休日(分)"],
+      ["日付", "区分", "出勤", "退勤", "休憩(分)", "実働(分)", "法定内(分)", "時間外(分)", "深夜(分)", "法定休日(分)"],
       ...data.days.map(({ plan: p, result: r }) => [
         p.date, dayLabel(p, p.date).text, p.start !== undefined ? clock(p.start) : "", p.end !== undefined && p.kind === "work" ? clock(p.end) : "",
         p.breaks.reduce((s, b) => s + b.end - b.start, 0) || "", r?.workMin ?? "", r?.legalInMin ?? "", r?.dailyOvertimeMin ?? "", r?.nightMin ?? "", r?.legalHolidayMin ?? "",
@@ -261,7 +259,7 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
               <thead>
                 <tr>
                   <th>日付</th><th>区分</th><th className="r">出勤</th><th className="r">退勤</th><th className="r">休憩</th>
-                  <th className="r">実働</th><th className="r">法定内</th><th className="r">{variable ? "時間外" : "時間外（日）"}</th><th className="r">深夜</th><th>備考</th>
+                  <th className="r">実働</th><th className="r">法定内</th><th className="r">時間外</th><th className="r">深夜</th><th>備考</th>
                 </tr>
               </thead>
               <tbody>
@@ -308,9 +306,7 @@ export function AttendanceDetail({ id, go, ym, setYm }: { id: string; go: (to: s
         </section>
         <p className="note">
           {m.rounded ? "時間外・深夜・法定休日の月合計は、会社の設定により30分単位で丸めています（30分未満切捨・以上切上）。下の日別の合計とは一致しないことがあります。" : null}
-          {variable
-            ? "日別の「時間外」は、その日に新たに発生した時間外（日・週・期間の判定の合計）です。週・期間の超過は、超えた日に付きます。本日は集計前です。"
-            : `合計の時間外には、週40時間を超えた分${m.weeklyOvertimeMin ? `（${dur(m.weeklyOvertimeMin)}）` : ""}を含みます。日別の欄は日8時間超のみを表示します。`}
+          日別の「時間外」は、その日に新たに発生した時間外です。週の超過{variable ? "・期間の超過" : ""}は、超えた日に付きます。月の合計は、この列の合計と一致します。本日は集計前です。
         </p>
       </div>
     </>

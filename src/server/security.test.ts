@@ -140,3 +140,23 @@ describe("CSV の数式インジェクション対策", () => {
     expect(buildCsv([["a", 1], ["=x", 2]])).toBe("﻿a,1\r\n'=x,2");
   });
 });
+
+describe("ログインの同時試行", () => {
+  it("検証を待つあいだに同時に届いた誤りも、失敗の上限に数えられる。正しいパスワードが後ろに混ざっていても、ロック後は入れない", async () => {
+    const t = setup({ nowMin: 840, at: "14:00" });
+    const attempt = (password: string) => t.call("POST", "/api/auth/login", { body: { company: "demo", id: "e01", password } });
+    const results = await Promise.all(Array.from({ length: 30 }, (_, i) => attempt(i === 20 ? PASSWORD : "wrong-password-x")));
+    const codes = results.map((r) => r.status);
+    expect(codes.filter((c) => c === 401).length).toBeLessThanOrEqual(5);
+    expect(codes[20]).toBe(423);
+    expect(codes).not.toContain(200);
+  });
+
+  it("成功したログインは、IPごとの失敗の上限に数えられない（同じ事業所の多数の社員が朝に続けてログインできる）", async () => {
+    const t = setup({ nowMin: 840, at: "14:00" });
+    for (let i = 1; i <= 18; i++) {
+      const r = await t.call("POST", "/api/auth/login", { body: { company: "demo", id: `e${String(i).padStart(2, "0")}`, password: PASSWORD } });
+        expect(r.status, `e${i}`).toBe(200);
+    }
+  });
+});

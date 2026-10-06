@@ -66,7 +66,7 @@ describe("位置情報つきの打刻", () => {
     expect(d.geoFlags[TODAY]).toBe("out"); // 範囲外が優先
   });
 
-  it("制限モード: 範囲外や位置情報なしでは打刻できない。範囲内なら打刻できる。制限の対象外の社員は打刻できる", async () => {
+  it("制限モード: 範囲外や位置情報なしでは出勤できない。範囲内なら出勤できる。制限の対象外の社員は出勤できる。退勤・休憩は止めず、範囲外として記録する", async () => {
     await addSite();
     await patch({ geoMode: "enforce" });
     const c = await t.login("e01");
@@ -80,12 +80,23 @@ describe("位置情報つきの打刻", () => {
     expect(none.json.code).toBe("GEO_REQUIRED");
     expect(geoOf("e01")).toEqual([]); // 拒否された打刻は記録されない
     expect((await t.call("POST", "/api/punch", { cookie: c, body: { action: "in", geo: north(30) } })).status).toBe(200);
+    t.clock.set(TODAY, "18:00");
+    expect((await t.call("POST", "/api/punch", { cookie: c, body: { action: "out", geo: north(3000) } })).status).toBe(200); // 退勤は範囲外でも打刻できる
+    expect(geoOf("e01").map((e) => e.geo)).toEqual(["in", "out"]);
+    t.clock.set(TODAY, "09:00");
 
     await t.call("PATCH", "/api/employees/e02", { cookie: admin, body: { geoExempt: true } });
     const e02 = await t.login("e02");
     expect(((await t.call("GET", "/api/punch/today", { cookie: e02 })).json as PunchStateResponse).geo.required).toBe(false);
     expect((await t.call("POST", "/api/punch", { cookie: e02, body: { action: "in" } })).status).toBe(200);
     expect(geoOf("e02")[0]!.geo).toBe("unknown");
+  });
+
+  it("記録モードでも、打刻場所が1件も登録されていなければ、判定に使わない座標は保存しない", async () => {
+    await patch({ geoMode: "record" });
+    const c = await t.login("e01");
+    await t.call("POST", "/api/punch", { cookie: c, body: { action: "in", geo: north(10) } });
+    expect(geoOf("e01")).toEqual([{ geo: "unknown", lat: null, lng: null }]);
   });
 
   it("打刻場所が1件も無ければ、制限モードでも打刻は止まらない（設定ミスで全員が打刻できなくなるのを防ぐ）", async () => {

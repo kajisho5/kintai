@@ -95,10 +95,12 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
     const until = Math.max(accountIpThrottle.lockedUntil(`${key}|${ip}`, now), accountThrottle.lockedUntil(key, now));
     if (until) throw new ApiError(423, `ログインに続けて失敗したため、しばらくロックしています（あと${Math.ceil((until - now) / 60000)}分）`);
 
+    // 検証（時間のかかる計算）の前に、この試行を失敗として数えておく。検証を待つあいだに同時に届いた試行も、上限に数えられる。
+    // 成功したときだけ、あとで取り消す（同時に大量の試行を送って、制限を素通りされないため）
+    accountIpThrottle.failure(`${key}|${ip}`, now);
+    accountThrottle.failure(key, now);
+    ipFails.record(ip, now);
     const fail = (): never => {
-      accountIpThrottle.failure(`${key}|${ip}`, now);
-      accountThrottle.failure(key, now);
-      ipFails.record(ip, now);
       throw new ApiError(401, "企業ID・社員ID・パスワードのいずれかが違います");
     };
     const tenant = manager.findByCode(body.company);
@@ -115,6 +117,7 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
     if (tenant.status === "suspended") throw new ApiError(403, "このアカウントは停止されています。サポートにお問い合わせください");
     accountIpThrottle.success(`${key}|${ip}`);
     accountThrottle.success(key);
+    ipFails.refund(ip, now);
     const token = createSession(db, r.id, now, config.sessionHours * 3600_000);
     setSession(c, config, tenant.id, token);
     audit(db, now, r.id, "login", { ip });

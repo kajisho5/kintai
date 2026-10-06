@@ -199,3 +199,29 @@ describe("共用の打刻端末: ICカード", () => {
     expect(PASSWORD).toBeTruthy();
   });
 });
+
+describe("共用の打刻端末: 同時に大量の試行を送られた場合", () => {
+  it("暗証番号の検証を待つあいだに同時に届いた試行も、失敗の上限に数えられる（正しい番号が後ろに混ざっていても通らない）", async () => {
+    const pin = await issuePin();
+    const wrong = pin === "111112" ? "111113" : "111112";
+    const results = await Promise.all(Array.from({ length: 40 }, (_, i) => identify({ empId: "e01", pin: i === 30 ? pin : wrong })));
+    const codes = results.map((r) => r.status);
+    expect(codes.filter((c) => c === 401).length).toBeLessThanOrEqual(5);
+    expect(codes.filter((c) => c === 423).length).toBeGreaterThanOrEqual(35);
+    expect(codes[30]).toBe(423); // 上限のあとに届いた正しい番号は、ロック中として拒否される
+    expect(codes).not.toContain(200);
+  });
+
+  it("成功した確認は、試行の数に残らない（通常の利用でロックされない）", async () => {
+    const pin = await issuePin();
+    for (let i = 0; i < 8; i++) expect((await identify({ empId: "e01", pin })).status).toBe(200);
+  });
+
+  it("存在しない社員IDや、暗証番号の入力欄に入れた文字列は、監査ログに残らない。存在する社員の失敗は残る", async () => {
+    await issuePin("e01");
+    await identify({ empId: "123456", pin: "000000" });
+    await identify({ empId: "e01", pin: "000000" });
+    const actors = (t.db.prepare("SELECT actor FROM audit_log WHERE action = 'kiosk_pin_failed'").all() as { actor: string }[]).map((r) => r.actor);
+    expect(actors).toEqual(["e01"]);
+  });
+});

@@ -143,3 +143,43 @@ describe("日またぎと法定休日", () => {
     expect(r.dailyOvertimeMin).toBe(0);
   });
 });
+
+describe("日またぎの勤務に関する追加の確認", () => {
+  it("退勤した直後の月の時間外の表示が、二重にならない（集計済みの勤務に、同じ勤務の分を足さない）", async () => {
+    const t = setup({ nowMin: -1, at: "20:00" });
+    let c = await t.login("e01");
+    await act(t, c, "in"); // 20:00
+    t.clock.set(NEXT, "02:00");
+    const mid = (await t.call("GET", "/api/punch/today", { cookie: c })).json as PunchStateResponse;
+    t.clock.set(NEXT, "07:00");
+    await act(t, c, "out"); // 11時間（休憩なし）→ 日の時間外3時間
+    const after = (await t.call("GET", "/api/punch/today", { cookie: c })).json as PunchStateResponse;
+    t.clock.set(NEXT, "19:30"); // 退勤から12時間半後（前の勤務は表示されなくなる）
+    c = await t.login("e01");
+    const later = (await t.call("GET", "/api/punch/today", { cookie: c })).json as PunchStateResponse;
+    expect(after.monthOvertimeMin).toBe(later.monthOvertimeMin); // 退勤直後と、集計に入ったあとで、同じ値
+    expect(mid.monthOvertimeMin).toBeLessThan(after.monthOvertimeMin);
+  });
+
+  it("退勤が無いまま12時間を超えて続く勤務は、打刻漏れとして、新しい出勤を受け付ける（前の勤務は退勤打刻なしのまま残る）", async () => {
+    const t = setup({ nowMin: -1, at: "17:00" });
+    let c = await t.login("e01");
+    await act(t, c, "in");
+    t.clock.set(NEXT, "08:00"); // 15時間後
+    c = await t.login("e01");
+    const s = (await t.call("GET", "/api/punch/today", { cookie: c })).json as PunchStateResponse;
+    expect(s.staleShift).toBe(true);
+    expect((await act(t, c, "in")).status).toBe(200);
+    expect(events(t, "e01", TODAY).map((e) => e.kind)).toEqual(["in"]);
+    expect(events(t, "e01", NEXT).map((e) => e.kind)).toEqual(["in"]);
+  });
+
+  it("12時間以内なら、日またぎの勤務中の出勤は、これまでどおり拒否される", async () => {
+    const t = setup({ nowMin: -1, at: "22:00" });
+    const c = await t.login("e01");
+    await act(t, c, "in");
+    t.clock.set(NEXT, "05:00"); // 7時間後
+    expect((await act(t, c, "in")).status).toBe(409);
+    expect(((await t.call("GET", "/api/punch/today", { cookie: c })).json as PunchStateResponse).staleShift).toBeUndefined();
+  });
+});

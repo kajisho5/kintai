@@ -142,20 +142,22 @@ app.get("/api/dashboard", (c) => {
 
 const ymParam = (c: Context<Env>, snap: Snapshot): string => {
   const ym = c.req.query("ym") ?? snap.currentYm;
-  if (!isYm(ym) || !snap.fyMonths.includes(ym)) throw new ApiError(400, "対象月が正しくありません");
+  if (!isYm(ym) || !snap.pickerMonths.includes(ym)) throw new ApiError(400, "対象月が正しくありません");
   return ym;
 };
 
+/** 勤怠の画面・CSV用。前の協定期間の最終月が指定されたときは、36協定のチェックに必要な前の期間ぶんも読み込む */
+const attendanceSnapshot = (c: Context<Env>): Snapshot => snapshot(c.get("db"), c.get("clock"), { backTo: c.req.query("ym") });
+
 app.get("/api/attendance", (c) => {
-  const { db, clock } = ctx(c);
   requireAdmin(c);
-  const snap = snapshot(db, clock);
+  const snap = attendanceSnapshot(c);
   const ym = ymParam(c, snap);
   const range = periodOfYm(ym, snap.settings.closingDay);
   const body: AttendanceListResponse = {
     ym,
     range: { from: range.start, to: range.end },
-    months: snap.fyMonths,
+    months: snap.pickerMonths,
     today: snap.today,
     currentYm: snap.currentYm,
     rows: snap.allEmployees
@@ -176,9 +178,8 @@ app.get("/api/attendance", (c) => {
  * 取り込み側の項目に合わせて列を並べ替えて使う。
  */
 app.get("/api/attendance/export", (c) => {
-  const { db, clock } = ctx(c);
   requireAdmin(c);
-  const snap = snapshot(db, clock);
+  const snap = attendanceSnapshot(c);
   const ym = ymParam(c, snap);
   const kind = c.req.query("kind") === "detail" ? "detail" : "summary";
   const decimal = c.req.query("time") === "decimal";
@@ -231,7 +232,7 @@ app.get("/api/attendance/:id", (c) => {
   const me = c.get("me");
   const id = c.req.param("id");
   if (me.role !== "admin" && me.id !== id) throw new ApiError(403, "他の社員の勤怠は表示できません");
-  const snap = snapshot(db, clock);
+  const snap = attendanceSnapshot(c);
   const emp = snap.allEmployees.find((e) => e.id === id);
   if (!emp) throw new ApiError(404, "社員が見つかりません");
   const ym = ymParam(c, snap);
@@ -240,7 +241,7 @@ app.get("/api/attendance/:id", (c) => {
     emp: { ...brief(emp), weeklyDays: emp.weeklyDays, weeklyHours: emp.weeklyHours, workStyle: emp.workStyle },
     ym,
     range: { from: range.start, to: range.end },
-    months: snap.fyMonths,
+    months: snap.pickerMonths,
     today: snap.today,
     currentYm: snap.currentYm,
     month: monthSummary(snap.ledger.monthOf(emp, ym), snap.settings.rounding),

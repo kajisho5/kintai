@@ -161,7 +161,9 @@ export interface PunchStateResponse {
   outlook: Outlook;
   riskLevel: RiskLevel;
   leaveRemaining: number;
-  /** 位置情報による打刻場所の確認。required のとき、打刻には位置情報が必要 */
+  /** 日またぎの勤務としては長すぎる、退勤の無い勤務が続いている（退勤の打刻漏れの可能性）。新しい出勤も押せる */
+  staleShift?: boolean;
+  /** 位置情報による打刻場所の確認。required のとき、出勤の打刻には位置情報が必要 */
   geo: { mode: "off" | "record" | "enforce"; required: boolean };
 }
 

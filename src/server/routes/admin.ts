@@ -348,7 +348,9 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     if (cur.active !== 1) throw new ApiError(409, "すでに退職扱いです");
     if (cur.role === "admin" && activeAdmins(db) <= 1) throw new ApiError(409, "最後の管理者は退職処理できません");
     tx(db, () => {
-      db.prepare("UPDATE employees SET active = 0, left_on = ? WHERE id = ?").run(c.get("clock").now().date, cur.id);
+      // 退職者の共用端末用の暗証番号・カードは、無効にする（カードを、ほかの社員に登録し直せるように）
+      db.prepare("UPDATE employees SET active = 0, left_on = ?, punch_pin_hash = NULL, card_hash = NULL WHERE id = ?").run(c.get("clock").now().date, cur.id);
+      db.prepare("DELETE FROM kiosk_tickets WHERE emp_id = ?").run(cur.id);
       db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(cur.id);
       // 未処理の申請は取り下げ扱いにする
       db.prepare("UPDATE requests SET status = 'cancelled' WHERE emp_id = ? AND status = 'pending'").run(cur.id);
@@ -548,7 +550,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     const cur = target(c);
     const { card } = parse(z.object({ card: z.string().min(1, "カード番号を入力してください").max(100) }), await c.req.json().catch(() => null));
     const normalized = normalizeCard(card);
-    if (!normalized) throw new ApiError(400, "カード番号は、英数字4〜64文字で入力してください（カードリーダーでカードを読み取ると入力できます）");
+    if (!normalized) throw new ApiError(400, "カード番号は、英数字6〜64文字で入力してください（カードリーダーでカードを読み取ると入力できます）");
     try {
       db.prepare("UPDATE employees SET card_hash = ? WHERE id = ?").run(cardHash(c.get("tenant").id, normalized), cur.id);
     } catch (err) {

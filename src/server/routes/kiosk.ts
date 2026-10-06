@@ -26,8 +26,9 @@ function splitToken(token: string): { tenantId: string; secret: string } | undef
 export function kioskPublicRoutes({ manager, clockFor, config }: Deps): Hono<Env> {
   const app = new Hono<Env>();
   const terminalLimit = new RateLimiter(600, 10 * 60_000); // 端末ごとの全リクエスト
-  const failIp = new RateLimiter(30, 10 * 60_000);
+  const failIp = new RateLimiter(30, 10 * 60_000); // 無効な端末トークンの試行（IPごと）
   const failCard = new RateLimiter(20, 10 * 60_000);
+  const pinAttempts = new RateLimiter(60, 10 * 60_000); // 端末ごとの暗証番号の試行（成功も数える）
   const pinThrottle = new LoginThrottle(5, 5 * 60_000); // 同じ社員に5回失敗 → 5分ロック（端末をまたいで）
 
   const resolve = (token: string, now: number, ip: string) => {
@@ -87,12 +88,15 @@ export function kioskPublicRoutes({ manager, clockFor, config }: Deps): Hono<Env
       const tkey = `${r.tenant.id}|${b.empId}`;
       const until = pinThrottle.lockedUntil(tkey, now);
       if (until) throw new ApiError(423, `暗証番号の入力に続けて失敗したため、しばらくロックしています（あと${Math.ceil((until - now) / 60000)}分）`);
+      if (pinAttempts.blocked(key, now)) throw new ApiError(429, "暗証番号の入力が多すぎます。しばらくお待ちください");
+      // 検証（時間のかかる計算）の前に、この試行を失敗として数えておく。同時に大量の試行を送られても、上限を超えた分は検証されない。成功したときだけ取り消す
+      pinAttempts.record(key, now);
+      pinThrottle.failure(tkey, now);
       const row = r.db.prepare("SELECT id, punch_pin_hash AS h FROM employees WHERE id = ? AND active = 1").get(b.empId) as { id: string; h: string | null } | undefined;
       const ok = row?.h ? await verifyPassword(b.pin, row.h) : (await burnPasswordCheck(b.pin), false);
       if (!ok) {
-        pinThrottle.failure(tkey, now);
-        failIp.record(ip, now);
-        audit(r.db, now, b.empId, "kiosk_pin_failed", { terminal: r.term.id });
+        // 監査ログには、存在する社員IDのときだけ残す（入力欄に誤って入れた暗証番号や、任意の文字列が残らないように）
+        if (row) audit(r.db, now, row.id, "kiosk_pin_failed", { terminal: r.term.id });
         throw new ApiError(401, "社員IDか暗証番号が違います");
       }
       pinThrottle.success(tkey);
@@ -107,7 +111,10 @@ export function kioskPublicRoutes({ manager, clockFor, config }: Deps): Hono<Env
     const ev = punchState(snap, emp).events;
     const phase: KioskIdentified["phase"] = ev.in === undefined ? "before" : ev.out !== undefined ? "done" : ev.openBreak !== undefined ? "break" : "working";
     const carriedDone = phase === "done" && punchState(snap, emp).offsetMin > 0; // 日またぎの勤務を退勤済み → 次の勤務の出勤はできる
-    const allowed: PunchKind[] = phase === "before" || carriedDone ? ["in"] : phase === "working" ? ["break_start", "out"] : phase === "break" ? ["break_end", "out"] : [];
+    const stale = punchState(snap, emp).staleShift === true;
+    const allowed: PunchKind[] =
+      phase === "before" || carriedDone ? ["in"] : phase === "working" ? ["break_start", "out"] : phase === "break" ? ["break_end", "out"] : [];
+    if (stale) allowed.unshift("in"); // 退勤の打刻漏れの可能性が高いときは、新しい出勤も押せる
     const ticket = randomBytes(24).toString("base64url");
     r.db.prepare("DELETE FROM kiosk_tickets WHERE expires_at < ?").run(now);
     r.db.prepare("INSERT INTO kiosk_tickets (token_hash, emp_id, terminal_id, expires_at) VALUES (?, ?, ?, ?)").run(sha256(ticket), emp.id, r.term.id, now + TICKET_SECONDS * 1000);

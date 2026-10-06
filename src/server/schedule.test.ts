@@ -240,3 +240,34 @@ describe("給与用CSV", () => {
     expect(lines.some((l) => l.startsWith("e02,=1+1"))).toBe(false);
   });
 });
+
+describe("協定期間の境目・変形期間が協定期間より前から始まる場合", () => {
+  it("協定期間の初月は、直前の月（前の協定期間の最終月）も勤怠・CSVで選べる。その月の年の累計は、前の協定期間の月も含めて数える", async () => {
+    // 協定期間の起算月を10月にする（今日は10/6 → 今の協定期間の初月）
+    await t.call("PATCH", "/api/settings", { cookie: admin, body: { fyStartMonth: 10 } });
+    const list = (await t.call("GET", "/api/attendance?ym=2026-09", { cookie: admin })).json;
+    expect(list.months).toEqual(["2026-09", "2026-10"]);
+    expect((await t.call("GET", "/api/attendance?ym=2026-08", { cookie: admin })).status).toBe(400);
+    const d = (await t.call("GET", "/api/attendance/e06?ym=2026-09", { cookie: admin })).json as AttendanceDetailResponse;
+    // 9月の年累計（前の協定期間 4〜9月）は、協定期間が4月のときと同じになる
+    await t.call("PATCH", "/api/settings", { cookie: admin, body: { fyStartMonth: 4 } });
+    const ref = (await t.call("GET", "/api/attendance/e06?ym=2026-09", { cookie: admin })).json as AttendanceDetailResponse;
+    expect(d.risk.yearOvertime).toBe(ref.risk.yearOvertime);
+    expect(d.risk.yearOvertime).toBeGreaterThan(0);
+    await t.call("PATCH", "/api/settings", { cookie: admin, body: { fyStartMonth: 10 } });
+    const csv = await t.app.request("/api/attendance/export?ym=2026-09&kind=summary", { headers: { cookie: admin } });
+    expect(csv.status).toBe(200);
+  });
+
+  it("1年単位の変形期間（1月起算）が協定期間（4月起算）より前から始まっても、1〜3月の実績が期間に含まれる", async () => {
+    await t.call("PATCH", "/api/employees/e01", { cookie: admin, body: { workStyle: "yearly" } });
+    await t.call("PATCH", "/api/settings", { cookie: admin, body: { yearlyStartMonth: 1 } });
+    const get = async () => ((await t.call("GET", "/api/attendance/e01?ym=2026-09", { cookie: admin })).json as AttendanceDetailResponse).period!;
+    const before = await get();
+    expect(before.start).toBe("2026-01-01");
+    const ins = t.db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, created_at) VALUES ('e01', '2026-01-05', ?, ?, 1)");
+    ins.run("in", 540);
+    ins.run("out", 1140);
+    expect((await get()).workMin - before.workMin).toBe(600);
+  });
+});
