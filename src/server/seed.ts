@@ -4,7 +4,7 @@
  */
 import { addDays, dowOf, fiscalStartYm, lastGrantDate, type Employee } from "../domain";
 import { HOLIDAYS_JP } from "../domain/holidays-jp";
-import { hashPassword } from "./auth";
+import { hashPasswordSync } from "./auth";
 import { audit, tx, type Db } from "./db";
 
 const HOLIDAY_SET = new Set(HOLIDAYS_JP.map(([d]) => d));
@@ -103,8 +103,8 @@ export interface SeedOptions {
 export function seedDemo(db: Db, opts: SeedOptions): void {
   const { today, nowMin } = opts;
   const fyStart = `${fiscalStartYm(today)}-01`;
-  const hash = hashPassword(opts.password);
-  const adminHash = opts.adminPassword ? hashPassword(opts.adminPassword) : hash;
+  const hash = hashPasswordSync(opts.password);
+  const adminHash = opts.adminPassword ? hashPasswordSync(opts.adminPassword) : hash;
   const now = Date.now();
 
   tx(db, () => {

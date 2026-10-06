@@ -28,6 +28,13 @@ export class SmtpMailer implements Mailer {
   }
 }
 
+/** 本番で SMTP が未設定のとき: 送らず、件名と宛先だけを記録する（本文にはパスワード再設定のリンクが入るため、ログに出さない） */
+export class DiscardMailer implements Mailer {
+  async send(m: Mail): Promise<void> {
+    console.warn(`メールを送信できません（SMTP_URL が未設定）: ${m.subject} → ${m.to.replace(/^(.).*(@.*)$/, "$1***$2")}`);
+  }
+}
+
 /** テスト用: 送信内容をためる */
 export class MemoryMailer implements Mailer {
   sent: Mail[] = [];
@@ -39,7 +46,10 @@ export class MemoryMailer implements Mailer {
 /** SMTP_URL（例: smtps://user:pass@smtp.example.com）があれば実際に送る。なければ開発用の出力のみ */
 export function mailerFromEnv(env: NodeJS.ProcessEnv): Mailer {
   if (env.SMTP_URL) return new SmtpMailer(env.SMTP_URL, env.MAIL_FROM ?? `${BRAND.name} <${BRAND.operator.email}>`);
-  if (env.NODE_ENV === "production") console.warn("警告: SMTP_URL が未設定のため、メールは送信されません（パスワード再設定などが使えません）");
+  if (env.NODE_ENV === "production") {
+    console.warn("警告: SMTP_URL が未設定のため、メールは送信されません（パスワード再設定などが使えません）");
+    return new DiscardMailer();
+  }
   return new ConsoleMailer();
 }
 

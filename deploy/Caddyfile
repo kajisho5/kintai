@@ -1,5 +1,9 @@
 # {$DOMAIN} へのアクセスを、アプリに中継する。HTTPS の証明書は自動で取得・更新される
 {$DOMAIN} {
 	encode zstd gzip
+	# 巨大なリクエストを入口で止める（CSV取り込みの3MBが最大）
+	request_body {
+		max_size 3MB
+	}
 	reverse_proxy app:8787
 }

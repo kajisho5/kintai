@@ -132,6 +132,11 @@ export class TenantManager {
     migrate(this.control, CONTROL_MIGRATIONS);
   }
 
+  /** 管理用DBに接続できるか確認する（全件を読まない軽い問い合わせ） */
+  ping(): void {
+    this.control.prepare("SELECT 1").get();
+  }
+
   findByCode(code: string): Tenant | undefined {
     const r = this.control.prepare("SELECT * FROM tenants WHERE code = ?").get(code) as unknown as TenantRow | undefined;
     return r ? toTenant(r) : undefined;

@@ -42,10 +42,20 @@ export function clientIp(c: Context, trustProxy?: boolean): string {
 const setSession = (c: Context, cfg: AppConfig, tenantId: string, token: string) =>
   setCookie(c, COOKIE, `${tenantId}.${token}`, { httpOnly: true, sameSite: "Lax", secure: cfg.secureCookie, path: "/", maxAge: cfg.sessionHours * 3600 });
 
+/** 1行の名前。改行などの制御文字とURLは受け付けない（案内メールの本文にそのまま入るため、第三者への悪用を防ぐ） */
+const plainLine = (label: string, max: number) =>
+  z
+    .string()
+    .trim()
+    .min(1, `${label}を入力してください`)
+    .max(max, `${label}は${max}文字以内で入力してください`)
+    .refine((v) => !/[\u0000-\u001f\u007f\u2028\u2029]/.test(v), `${label}に使えない文字が含まれています`)
+    .refine((v) => !/https?:|www\.|:\/\//i.test(v), `${label}にURLは入力できません`);
+
 const signupSchema = z.object({
-  companyName: z.string().trim().min(1, "会社名を入力してください").max(60, "会社名は60文字以内で入力してください"),
+  companyName: plainLine("会社名", 60),
   code: z.string().trim().toLowerCase(),
-  adminName: z.string().trim().min(1, "お名前を入力してください").max(40),
+  adminName: plainLine("お名前", 40),
   adminId: z.string().trim().regex(/^[A-Za-z0-9._-]{1,30}$/, "社員IDは半角英数字と . _ - の30文字以内で入力してください").default("admin"),
   email: z.string().trim().toLowerCase().email("メールアドレスの形式が正しくありません").max(120),
   password: z.string().min(10, "パスワードは10文字以上にしてください").max(200),
@@ -55,12 +65,18 @@ const signupSchema = z.object({
 /** ログイン前に使える API（ログイン・ログアウト・会社登録） */
 export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps): Hono<Env> {
   const app = new Hono<Env>();
-  const accountThrottle = new LoginThrottle();
+  // 同じアカウントを同じIPから5回失敗 → 5分ロック。さらに、IPを替えても同じアカウントへの失敗が多すぎれば15分ロック。
+  // （アカウント単位だけだと、他人が失敗を重ねて管理者を締め出せてしまう）
+  const accountIpThrottle = new LoginThrottle(5, 5 * 60_000);
+  const accountThrottle = new LoginThrottle(20, 15 * 60_000);
   const ipFails = new RateLimiter(20, 10 * 60_000);
   const signupLimit = new RateLimiter(10, 60 * 60_000);
   const checkLimit = new RateLimiter(60, 10 * 60_000);
   const forgotIp = new RateLimiter(10, 10 * 60_000);
-  const forgotKey = new RateLimiter(3, 60 * 60_000);
+  // 同じ宛先への案内メールは、IPに関係なく1時間10通まで（メール爆弾の防止）。同じIPからは3通まで
+  // （他人が先に申請を使い切って、本人が申請できなくなるのを防ぐため、宛先単位の上限は緩めに）
+  const forgotKey = new RateLimiter(10, 60 * 60_000);
+  const forgotKeyIp = new RateLimiter(3, 60 * 60_000);
   const resetIp = new RateLimiter(20, 10 * 60_000);
 
   app.post("/api/auth/login", async (c) => {
@@ -72,26 +88,28 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
     const ip = clientIp(c, config.trustProxy);
     const key = `${body.company}/${body.id}`;
     if (ipFails.blocked(ip, now)) throw new ApiError(429, `ログインの試行が多すぎます。${ipFails.retryAfterMin(ip, now)}分ほど待ってからお試しください`);
-    const until = accountThrottle.lockedUntil(key, now);
+    const until = Math.max(accountIpThrottle.lockedUntil(`${key}|${ip}`, now), accountThrottle.lockedUntil(key, now));
     if (until) throw new ApiError(423, `ログインに続けて失敗したため、しばらくロックしています（あと${Math.ceil((until - now) / 60000)}分）`);
 
     const fail = (): never => {
+      accountIpThrottle.failure(`${key}|${ip}`, now);
       accountThrottle.failure(key, now);
       ipFails.record(ip, now);
       throw new ApiError(401, "企業ID・社員ID・パスワードのいずれかが違います");
     };
     const tenant = manager.findByCode(body.company);
     if (!tenant) {
-      burnPasswordCheck(body.password);
+      await burnPasswordCheck(body.password);
       return fail();
     }
     const db = manager.db(tenant.id);
-    const r = checkCredentials(db, body.id, body.password);
+    const r = await checkCredentials(db, body.id, body.password);
     if (!r.ok) {
       audit(db, now, body.id, "login_failed", { ip });
       return fail();
     }
     if (tenant.status === "suspended") throw new ApiError(403, "このアカウントは停止されています。サポートにお問い合わせください");
+    accountIpThrottle.success(`${key}|${ip}`);
     accountThrottle.success(key);
     const token = createSession(db, r.id, now, config.sessionHours * 3600_000);
     setSession(c, config, tenant.id, token);
@@ -131,17 +149,25 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
     if (codeErr) throw new ApiError(400, codeErr);
     if (manager.findByCode(b.code)) throw new ApiError(409, "この企業IDはすでに使われています");
 
+    const pwHash = await hashPassword(b.password); // 重い計算は、会社を作る前・トランザクションの外で行う
     const tz = "Asia/Tokyo";
     const clock = clockFor(tz);
     const today = clock.now().date;
-    const tenant = manager.create({ code: b.code, name: b.companyName, adminEmail: b.email, tz, nowMs: now, termsVersion: TERMS_VERSION });
+    let tenant;
+    try {
+      tenant = manager.create({ code: b.code, name: b.companyName, adminEmail: b.email, tz, nowMs: now, termsVersion: TERMS_VERSION });
+    } catch (e) {
+      // 事前の確認のあとで同じ企業IDが登録された（同時登録）場合
+      if (e instanceof Error && /UNIQUE/i.test(e.message)) throw new ApiError(409, "この企業IDはすでに使われています");
+      throw e;
+    }
     try {
       const db = manager.db(tenant.id);
       tx(db, () => {
         db.prepare(
           `INSERT INTO employees (id, name, dept, title, kind, role, work_days, weekly_days, weekly_hours, base_min, sched_start, hired, carry, password_hash, email)
            VALUES (?, ?, '未設定', '', '正社員', 'admin', '[1,2,3,4,5]', 5, 40, 480, 540, ?, 0, ?, ?)`,
-        ).run(b.adminId, b.adminName, today, hashPassword(b.password), b.email);
+        ).run(b.adminId, b.adminName, today, pwHash, b.email);
         audit(db, now, b.adminId, "signup", { company: b.companyName, ip, terms: TERMS_VERSION });
       });
       const token = createSession(db, b.adminId, now, config.sessionHours * 3600_000);
@@ -163,9 +189,11 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
     const b = parse(z.object({ company: z.string().trim().toLowerCase().min(1).max(40), email: z.string().trim().toLowerCase().email().max(120) }), await c.req.json().catch(() => null));
     const now = clockFor("Asia/Tokyo").now().ts;
     const ip = clientIp(c, config.trustProxy);
-    if (forgotIp.blocked(ip, now) || forgotKey.blocked(`${b.company}/${b.email}`, now)) throw new ApiError(429, "しばらく待ってからもう一度お試しください");
+    const k = `${b.company}/${b.email}`;
+    if (forgotIp.blocked(ip, now) || forgotKey.blocked(k, now) || forgotKeyIp.blocked(`${k}|${ip}`, now)) throw new ApiError(429, "しばらく待ってからもう一度お試しください");
     forgotIp.record(ip, now);
-    forgotKey.record(`${b.company}/${b.email}`, now);
+    forgotKey.record(k, now);
+    forgotKeyIp.record(`${k}|${ip}`, now);
 
     const tenant = manager.findByCode(b.company);
     if (tenant && tenant.status !== "suspended" && appUrl) {
@@ -196,12 +224,13 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
     const tenant = manager.findByCode(b.company);
     if (!tenant || tenant.status === "suspended") throw invalid();
     const db = manager.db(tenant.id);
+    const pwHash = await hashPassword(b.password);
     tx(db, () => {
       const row = db.prepare("SELECT emp_id AS id, expires_at AS exp FROM password_resets WHERE token_hash = ? AND used_at IS NULL").get(sha256(b.token)) as { id: string; exp: number } | undefined;
       if (!row || row.exp < now) throw invalid();
       const emp = db.prepare("SELECT id FROM employees WHERE id = ? AND active = 1").get(row.id);
       if (!emp) throw invalid();
-      db.prepare("UPDATE employees SET password_hash = ?, must_change_password = 0 WHERE id = ?").run(hashPassword(b.password), row.id);
+      db.prepare("UPDATE employees SET password_hash = ?, must_change_password = 0 WHERE id = ?").run(pwHash, row.id);
       db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(row.id);
       db.prepare("UPDATE password_resets SET used_at = ? WHERE emp_id = ?").run(now, row.id); // この人の未使用トークンはすべて無効にする
       audit(db, now, row.id, "password_reset", { ip });
@@ -216,6 +245,8 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
 export function accountRoutes({ config }: Deps): Hono<Env> {
   const app = new Hono<Env>();
   const throttle = new LoginThrottle();
+  // 成功も含めて回数を数える（重いパスワード計算を繰り返し呼ばせないため）
+  const changeLimit = new RateLimiter(10, 60 * 60_000);
 
   app.get("/api/me", (c) => {
     const me = c.get("me");
@@ -259,13 +290,16 @@ export function accountRoutes({ config }: Deps): Hono<Env> {
     const key = `${tenant.id}/${me.id}`;
     const until = throttle.lockedUntil(key, now.ts);
     if (until) throw new ApiError(423, "しばらくしてからもう一度お試しください");
-    if (!checkCredentials(db, me.id, body.current).ok) {
+    if (changeLimit.blocked(key, now.ts)) throw new ApiError(429, "パスワードの変更が多すぎます。しばらくしてからお試しください");
+    changeLimit.record(key, now.ts);
+    if (!(await checkCredentials(db, me.id, body.current)).ok) {
       throttle.failure(key, now.ts);
       throw new ApiError(400, "現在のパスワードが違います");
     }
     if (body.next === body.current) throw new ApiError(400, "現在と同じパスワードは使えません");
     throttle.success(key);
-    db.prepare("UPDATE employees SET password_hash = ?, must_change_password = 0 WHERE id = ?").run(hashPassword(body.next), me.id);
+    const nextHash = await hashPassword(body.next);
+    db.prepare("UPDATE employees SET password_hash = ?, must_change_password = 0 WHERE id = ?").run(nextHash, me.id);
     // 他の端末のログインは無効にし、この端末には新しいセッションを発行する
     db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(me.id);
     const token = createSession(db, me.id, now.ts, config.sessionHours * 3600_000);

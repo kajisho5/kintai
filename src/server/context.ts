@@ -15,7 +15,7 @@ export interface AppConfig {
 
 export class ApiError extends Error {
   constructor(
-    readonly status: 400 | 401 | 402 | 403 | 404 | 409 | 423 | 429,
+    readonly status: 400 | 401 | 402 | 403 | 404 | 409 | 413 | 423 | 429,
     message: string,
     readonly code?: string,
   ) {

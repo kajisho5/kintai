@@ -168,40 +168,44 @@ export function applyBillingEvent(manager: TenantManager, ev: BillingEvent, nowM
     const tenant = (("tenantId" in ev && ev.tenantId ? manager.findById(ev.tenantId) : undefined) ?? (ev.customerId ? manager.findByStripeCustomer(ev.customerId) : undefined)) as Tenant | undefined;
     if (!tenant) return "unknown_tenant";
     const at = ev.created * 1000;
+    // 古いイベントが後から届いても、新しい状態を巻き戻さない（種類を問わず、最後に処理したイベントより前のものは無視）
+    if (at < tenant.stripeLastEventAt) return "stale";
+    // 運営者が停止した会社は、Stripe の通知では自動で復活させない。紐づけ情報だけ更新する
+    const suspended = tenant.status === "suspended";
+    const setStatus = (status: Tenant["status"]) => (suspended ? undefined : status);
 
     switch (ev.kind) {
       case "checkout_completed": {
         if (!ev.paid) return "ignored";
-        manager.update(tenant.id, { stripeCustomerId: ev.customerId, stripeSubscriptionId: ev.subscriptionId, status: "active" });
-        manager.clearPastDue(tenant.id);
+        manager.update(tenant.id, { stripeCustomerId: ev.customerId, stripeSubscriptionId: ev.subscriptionId, status: setStatus("active"), stripeLastEventAt: at });
+        if (!suspended) manager.clearPastDue(tenant.id);
         return "applied";
       }
       case "subscription": {
-        if (at < tenant.stripeLastEventAt) return "stale";
         const link = { stripeCustomerId: ev.customerId, stripeSubscriptionId: ev.subscriptionId, stripeItemId: ev.itemId, stripeLastEventAt: at };
         if (ev.status === "active" || ev.status === "trialing") {
-          manager.update(tenant.id, { ...link, status: "active" });
-          manager.clearPastDue(tenant.id);
+          manager.update(tenant.id, { ...link, status: setStatus("active") });
+          if (!suspended) manager.clearPastDue(tenant.id);
         } else if (ev.status === "past_due" || ev.status === "unpaid") {
-          manager.update(tenant.id, { ...link, status: "past_due", pastDueSince: tenant.pastDueSince ?? nowMs });
+          manager.update(tenant.id, { ...link, status: setStatus("past_due"), pastDueSince: suspended ? undefined : (tenant.pastDueSince ?? nowMs) });
         } else if (ev.status === "canceled") {
-          manager.update(tenant.id, { ...link, status: "canceled" });
+          manager.update(tenant.id, { ...link, status: setStatus("canceled") });
         } else {
           // incomplete など、まだ支払いが確定していない状態は契約状態を変えない
-          manager.update(tenant.id, { stripeItemId: ev.itemId, stripeLastEventAt: tenant.stripeLastEventAt });
+          manager.update(tenant.id, { stripeItemId: ev.itemId });
           return "ignored";
         }
         return "applied";
       }
       case "invoice_paid": {
         if (tenant.status !== "past_due") return "ignored";
-        manager.update(tenant.id, { status: "active" });
+        manager.update(tenant.id, { status: "active", stripeLastEventAt: at });
         manager.clearPastDue(tenant.id);
         return "applied";
       }
       case "invoice_failed": {
         if (tenant.status !== "active") return "ignored";
-        manager.update(tenant.id, { status: "past_due", pastDueSince: nowMs });
+        manager.update(tenant.id, { status: "past_due", pastDueSince: nowMs, stripeLastEventAt: at });
         return "applied";
       }
     }

@@ -118,12 +118,13 @@ function defaults(e: Pick<Created, "workDays" | "baseMin" | "weeklyDays" | "week
   return { weeklyDays, weeklyHours };
 }
 
-function insertEmployee(db: Db, e: Created, password: string, mustChange: boolean): void {
+/** password は、すでにハッシュ化したもの（重い計算はトランザクションの外・非同期で行うため） */
+function insertEmployee(db: Db, e: Created, passwordHash: string, mustChange: boolean): void {
   const { weeklyDays, weeklyHours } = defaults(e);
   db.prepare(
     `INSERT INTO employees (id, name, dept, title, kind, role, work_days, weekly_days, weekly_hours, base_min, sched_start, hired, carry, password_hash, email, must_change_password)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(e.id, e.name, e.dept, e.title, e.kind, e.role, JSON.stringify(e.workDays), weeklyDays, weeklyHours, e.baseMin, e.schedStart, e.hired, e.carry, hashPassword(password), e.email || null, mustChange ? 1 : 0);
+  ).run(e.id, e.name, e.dept, e.title, e.kind, e.role, JSON.stringify(e.workDays), weeklyDays, weeklyHours, e.baseMin, e.schedStart, e.hired, e.carry, passwordHash, e.email || null, mustChange ? 1 : 0);
 }
 
 const activeAdmins = (db: Db): number => (db.prepare("SELECT COUNT(*) AS n FROM employees WHERE active = 1 AND role = 'admin'").get() as { n: number }).n;
@@ -251,7 +252,15 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     if (db.prepare("SELECT 1 FROM employees WHERE id = ?").get(e.id)) throw new ApiError(409, `社員ID「${e.id}」はすでに使われています`);
     // 管理者が決めたパスワードも、初回ログイン時に本人が変更する
     const pw = e.password ?? tempPassword();
-    insertEmployee(db, e, pw, true);
+    const pwHash = await hashPassword(pw);
+    // 非同期の計算のあいだに状況が変わりうるため、登録の直前（同期処理の中）でもう一度確認する
+    seatCheck(c, 1);
+    try {
+      insertEmployee(db, e, pwHash, true);
+    } catch (err) {
+      if (err instanceof Error && /UNIQUE|PRIMARY/i.test(err.message)) throw new ApiError(409, `社員ID「${e.id}」はすでに使われています`);
+      throw err;
+    }
     audit(db, c.get("clock").now().ts, admin.id, "employee_create", { id: e.id, role: e.role });
     seatsChanged(c);
     return c.json({ id: e.id, tempPassword: pw }, 201);
@@ -298,13 +307,14 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     return c.json({ ok: true });
   });
 
-  app.post("/api/employees/:id/reset-password", (c) => {
+  app.post("/api/employees/:id/reset-password", async (c) => {
     const admin = requireAdmin(c);
     const db = c.get("db");
     const cur = target(c);
     if (cur.id === admin.id) throw new ApiError(400, "自分のパスワードは、画面左下の鍵のボタンから変更してください");
     const pw = tempPassword();
-    db.prepare("UPDATE employees SET password_hash = ?, must_change_password = 1 WHERE id = ?").run(hashPassword(pw), cur.id);
+    const pwHash = await hashPassword(pw);
+    db.prepare("UPDATE employees SET password_hash = ?, must_change_password = 1 WHERE id = ?").run(pwHash, cur.id);
     db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(cur.id);
     audit(db, c.get("clock").now().ts, admin.id, "employee_reset_password", { id: cur.id });
     return c.json({ id: cur.id, tempPassword: pw });
@@ -354,7 +364,14 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     if (body.dryRun) return c.json({ ok: true, dryRun: true, count: rows.length } satisfies ImportResponse);
 
     const credentials = rows.map(({ data }) => ({ id: data.id, name: data.name, tempPassword: tempPassword() }));
-    tx(db, () => rows.forEach(({ data }, i) => insertEmployee(db, data, credentials[i]!.tempPassword, true)));
+    const hashes = await Promise.all(credentials.map((c) => hashPassword(c.tempPassword))); // 同時に計算してもイベントループは止まらない
+    if (activeCount(db) + rows.length > limit) throw new ApiError(409, `ご契約の人数（${limit}名）を超えるため取り込めません`, "SEAT_LIMIT");
+    try {
+      tx(db, () => rows.forEach(({ data }, i) => insertEmployee(db, data, hashes[i]!, true)));
+    } catch (err) {
+      if (err instanceof Error && /UNIQUE|PRIMARY/i.test(err.message)) throw new ApiError(409, "同じ社員IDがすでに登録されています。もう一度、最初から取り込み直してください");
+      throw err;
+    }
     audit(db, c.get("clock").now().ts, admin.id, "employee_import", { count: rows.length });
     seatsChanged(c);
     return c.json({ ok: true, dryRun: false, count: rows.length, credentials } satisfies ImportResponse);

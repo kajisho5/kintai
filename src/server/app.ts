@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { getCookie } from "hono/cookie";
 import { secureHeaders } from "hono/secure-headers";
 import { sessionEmployee } from "./auth";
@@ -50,6 +51,15 @@ export function createApp(deps: AppDeps): Hono<Env> {
     }),
   );
 
+  // リクエスト本文の大きさに上限を設ける（未ログインでも巨大な本文を送り付けられるため、プロセスごと落とされるのを防ぐ）。
+  // CSV取り込みだけ大きめ、Stripe の通知は中くらい。
+  const limit = (maxSize: number) =>
+    bodyLimit({ maxSize, onError: () => { throw new ApiError(413, "送信するデータが大きすぎます"); } });
+  const small = limit(64 * 1024);
+  const medium = limit(1024 * 1024);
+  const large = limit(3 * 1024 * 1024);
+  app.use("/api/*", (c, next) => (c.req.path === "/api/employees/import" ? large : c.req.path === "/api/billing/webhook" ? medium : small)(c, next));
+
   // CSRF対策: 別オリジンからの更新系リクエストを拒否（CORSは無効のまま）
   app.use("/api/*", async (c, next) => {
     if (c.req.method !== "GET" && c.req.method !== "HEAD") {
@@ -70,7 +80,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
   app.notFound((c) => c.json({ error: "見つかりません" }, 404));
 
   app.get("/api/health", (c) => {
-    manager.list(); // 管理用DBに接続できるか確認
+    manager.ping(); // 管理用DBに接続できるか（軽い問い合わせで確認する）
     return c.json({ ok: true });
   });
 
