@@ -64,14 +64,21 @@ export function calcDay(input: DayInput): DayResult {
   const workMin = segs.reduce((s, x) => s + (x.end - x.start), 0);
   const nightMin = segs.reduce((s, x) => s + nightOverlap(x), 0);
 
-  if (input.isLegalHoliday) {
-    return { ...empty, workMin, legalHolidayMin: workMin, nightMin };
-  }
+  // 法定休日は暦日で扱う（昭23.4.5基発535）。日またぎの勤務は始業日の1日の労働だが、法定休日の暦日にかかる部分だけが休日労働になる
+  const holidayMin = segs.reduce(
+    (s, x) =>
+      s +
+      (input.isLegalHoliday ? overlap(x, { start: 0, end: DAY_MIN }) : 0) +
+      (input.nextIsLegalHoliday ? overlap(x, { start: DAY_MIN, end: 2 * DAY_MIN }) : 0),
+    0,
+  );
+  const ordinary = workMin - holidayMin;
   return {
     ...empty,
     workMin,
-    legalInMin: Math.min(workMin, LEGAL_DAILY_MIN),
-    dailyOvertimeMin: Math.max(0, workMin - LEGAL_DAILY_MIN),
+    legalInMin: Math.min(ordinary, LEGAL_DAILY_MIN),
+    dailyOvertimeMin: Math.max(0, ordinary - LEGAL_DAILY_MIN),
+    legalHolidayMin: holidayMin,
     nightMin,
   };
 }

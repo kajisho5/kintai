@@ -12,15 +12,45 @@ const STATUS_LABEL: Record<Status, string> = {
   off: "休み",
 };
 
-const AX0 = 7 * 60;
-const AX1 = 23 * 60;
-const HOURS = Array.from({ length: AX1 / 60 - AX0 / 60 + 1 }, (_, i) => AX0 / 60 + i);
+interface Axis {
+  ax0: number;
+  ax1: number;
+  hours: number[];
+  pct: (m: number) => string;
+  width: (a: number, b: number) => string;
+}
 
-const pct = (m: number) => `${Math.max(0, Math.min(100, ((m - AX0) / (AX1 - AX0)) * 100))}%`;
-const width = (a: number, b: number) =>
-  `${Math.max(0, (Math.min(AX1, b) - Math.max(AX0, a)) / (AX1 - AX0)) * 100}%`;
+const hourLabel = (h: number) => ((h % 24) + 24) % 24;
 
-function Track({ row, now }: { row: TodayRow; now: number }) {
+const MIN_AX0 = 7 * 60;
+const MAX_AX1 = 23 * 60;
+
+/** 横軸は既定で 7〜23 時。夜勤などで帯が範囲外に出る社員がいれば、その分だけ広げる（日またぎは前日の分がマイナスの時刻になる） */
+function axisFor(rows: TodayRow[]): Axis {
+  let lo = MIN_AX0;
+  let hi = MAX_AX1;
+  for (const r of rows) {
+    for (const b of r.bars) {
+      lo = Math.min(lo, b.from);
+      hi = Math.max(hi, b.to);
+    }
+  }
+  const ax0 = Math.max(-12 * 60, Math.floor(lo / 60) * 60);
+  const ax1 = Math.min(36 * 60, Math.ceil(hi / 60) * 60);
+  const span = ax1 - ax0;
+  return {
+    ax0,
+    ax1,
+    // 範囲が広いときは、目盛りを2時間おきにする
+    hours: Array.from({ length: (ax1 - ax0) / 60 + 1 }, (_, i) => ax0 / 60 + i).filter((h) => span <= 20 * 60 || hourLabel(h) % 2 === 0),
+    pct: (m) => `${Math.max(0, Math.min(100, ((m - ax0) / span) * 100))}%`,
+    width: (a, b) => `${(Math.max(0, Math.min(ax1, b) - Math.max(ax0, a)) / span) * 100}%`,
+  };
+}
+
+function Track({ row, now, axis }: { row: TodayRow; now: number; axis: Axis }) {
+  const { ax0, ax1, hours: HOURS, pct, width } = axis;
+  const AX0 = ax0;
   const showLine = row.start !== undefined && row.bars.length > 0;
   const lineEnd = row.bars.length ? row.bars[row.bars.length - 1]!.to : 0;
   return (
@@ -28,7 +58,9 @@ function Track({ row, now }: { row: TodayRow; now: number }) {
       {HOURS.map((h) => (
         <span key={h} className={`hr ${h % 3 === 0 ? "major" : ""}`} style={{ left: pct(h * 60) }} />
       ))}
-      <span className="night" style={{ left: pct(22 * 60), width: width(22 * 60, AX1) }} />
+      {[-1, 0, 1].map((k) => (
+        <span key={k} className="night" style={{ left: pct((22 + 24 * k) * 60), width: width((22 + 24 * k) * 60, (29 + 24 * k) * 60) }} />
+      ))}
       {showLine ? <span className="line" style={{ left: pct(row.start!), width: width(row.start!, lineEnd) }} /> : null}
       {row.bars.map((b, i) => (
         <span
@@ -42,7 +74,7 @@ function Track({ row, now }: { row: TodayRow; now: number }) {
         <span style={{ position: "absolute", left: pct(AX0 + 60), top: "50%", transform: "translateY(-50%)", fontSize: 12, color: "var(--ink-3)" }}>{row.note}</span>
       ) : null}
       {row.status === "missing" ? (
-        <span style={{ position: "absolute", left: pct(9 * 60), top: "50%", transform: "translateY(-50%)", fontSize: 12, color: "var(--beni)", fontWeight: 700 }}>
+        <span style={{ position: "absolute", left: pct(Math.max(AX0, 9 * 60)), top: "50%", transform: "translateY(-50%)", fontSize: 12, color: "var(--beni)", fontWeight: 700 }}>
           始業時刻を過ぎています（{clock(Math.floor(now))} 時点で打刻なし）
         </span>
       ) : null}
@@ -55,6 +87,8 @@ export function Diagram({ rows, now, dept }: { rows: TodayRow[]; now: number; de
     const depts = [...new Set(rows.map((r) => r.emp.dept))];
     return depts.filter((d) => dept === "all" || d === dept).map((d) => ({ dept: d, rows: rows.filter((r) => r.emp.dept === d) }));
   }, [rows, dept]);
+  const axis = useMemo(() => axisFor(rows), [rows]);
+  const { ax0: AX0, ax1: AX1, hours: HOURS, pct } = axis;
   const nowVisible = now >= AX0 && now <= AX1;
 
   return (
@@ -67,7 +101,7 @@ export function Diagram({ rows, now, dept }: { rows: TodayRow[]; now: number; de
           <div className="dg-ticks" aria-hidden="true">
             {HOURS.map((h) => (
               <span key={h} className={h === AX1 / 60 ? "last" : h === AX0 / 60 ? "first" : ""} style={{ left: pct(h * 60) }}>
-                {h}
+                {hourLabel(h)}
               </span>
             ))}
           </div>
@@ -93,7 +127,7 @@ export function Diagram({ rows, now, dept }: { rows: TodayRow[]; now: number; de
                     <b>{r.emp.name}</b>
                     <small>{r.emp.title || r.emp.kind}</small>
                   </div>
-                  <Track row={r} now={now} />
+                  <Track row={r} now={now} axis={axis} />
                   <div className={`dg-status ${r.status}`} role="cell">
                     <i />
                     {STATUS_LABEL[r.status]}

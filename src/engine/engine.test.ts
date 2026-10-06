@@ -44,6 +44,36 @@ describe("calcDay", () => {
     expect(r.legalInMin).toBe(0);
   });
 
+  it("夜勤 22:00-翌7:00 休憩1h（平日）→ 実働8h・時間外0・深夜7h", () => {
+    const r = calcDay({ date: "2026-10-05", work: { start: t(22), end: t(31) }, breaks: [{ start: t(25), end: t(26) }] });
+    expect(r.workMin).toBe(h(8));
+    expect(r.dailyOvertimeMin).toBe(0);
+    expect(r.nightMin).toBe(h(6)); // 22-25時の3h と 26-29時の3h（休憩の1hを除く）
+  });
+
+  it("法定休日の前日の夜から翌朝（土22:00→日7:00）は、日曜0:00以降の7hだけが休日労働", () => {
+    const r = calcDay({ date: "2026-10-03", work: { start: t(22), end: t(31) }, nextIsLegalHoliday: true });
+    expect(r.workMin).toBe(h(9));
+    expect(r.legalHolidayMin).toBe(h(7));
+    expect(r.legalInMin).toBe(h(2));
+    expect(r.dailyOvertimeMin).toBe(0);
+  });
+
+  it("法定休日の夜から翌朝（日20:00→月6:00 休憩1h）は、日曜の4hが休日労働、月曜側の5hは通常の労働", () => {
+    const r = calcDay({ date: "2026-10-04", work: { start: t(20), end: t(30) }, breaks: [{ start: t(24), end: t(25) }], isLegalHoliday: true });
+    expect(r.workMin).toBe(h(9));
+    expect(r.legalHolidayMin).toBe(h(4));
+    expect(r.legalInMin).toBe(h(5));
+  });
+
+  it("休日の暦日にかかる部分の残りが8時間を超えれば、その分は時間外", () => {
+    const r = calcDay({ date: "2026-10-03", work: { start: t(8), end: t(32) }, breaks: [{ start: t(12), end: t(13) }], nextIsLegalHoliday: true });
+    // 実働23h = 土曜16h（8-24時、休憩1h除く15h）+ 日曜8h
+    expect(r.legalHolidayMin).toBe(h(8));
+    expect(r.legalInMin).toBe(h(8));
+    expect(r.dailyOvertimeMin).toBe(h(7));
+  });
+
   it("退勤が出勤より前ならエラー", () => {
     expect(() => calcDay({ date: "2026-10-05", work: { start: t(18), end: t(9) } })).toThrow();
   });

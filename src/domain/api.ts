@@ -109,7 +109,11 @@ export interface DashboardResponse {
 }
 
 export interface PunchStateResponse {
+  /** 進行中の勤務の始業日。日またぎの勤務中は昨日の日付 */
   date: string;
+  /** 始業日の 0:00 から見た、今日の 0:00 の位置（日またぎの勤務中は 1440、そうでなければ 0） */
+  offsetMin: number;
+  /** 始業日の 0:00 からの現在時刻（日またぎなら 1440 以上） */
   nowMin: number;
   events: { in?: number; out?: number; breaks: Interval[]; openBreak?: number };
   day: DayResult;

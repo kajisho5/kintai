@@ -13,8 +13,10 @@ export interface DayInput {
   work?: Interval;
   /** 実際に取った休憩（労働時間から控除） */
   breaks?: Interval[];
-  /** 法定休日（週1回/4週4回）の労働か */
+  /** この暦日が法定休日（週1回/4週4回）か。法定休日は暦日（0:00〜24:00）で扱う */
   isLegalHoliday?: boolean;
+  /** 翌暦日が法定休日か。日またぎの勤務のうち、翌日 0:00 以降の部分は休日労働になる */
+  nextIsLegalHoliday?: boolean;
 }
 
 export interface DayResult {

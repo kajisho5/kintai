@@ -15,7 +15,8 @@ const TABS: { key: Tab; label: string }[] = [
 const KIND_TONE: Record<RequestView["kind"], "ai" | "warn" | ""> = { 残業申請: "warn", 休日出勤: "warn", 打刻修正: "", 有給申請: "ai" };
 const KINDS: RequestView["kind"][] = ["残業申請", "休日出勤", "有給申請", "打刻修正"];
 
-const toMin = (hhmm: string): number | undefined => (/^\d{2}:\d{2}$/.test(hhmm) ? Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3)) : undefined);
+const toMin = (hhmm: string, nextDay = false): number | undefined =>
+  /^\d{2}:\d{2}$/.test(hhmm) ? Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3)) + (nextDay ? 1440 : 0) : undefined;
 
 export function Approvals() {
   const { me, isAdmin, refresh } = useSession();
@@ -130,6 +131,8 @@ function RequestDialog({ open, onClose, onCreated }: { open: boolean; onClose: (
   const [date, setDate] = useState(me.today);
   const [start, setStart] = useState("18:00");
   const [end, setEnd] = useState("20:00");
+  const [endNext, setEndNext] = useState(false);
+  const [outNext, setOutNext] = useState(false);
   const [days, setDays] = useState<1 | 0.5>(1);
   const [inT, setInT] = useState("");
   const [outT, setOutT] = useState("");
@@ -152,10 +155,10 @@ function RequestDialog({ open, onClose, onCreated }: { open: boolean; onClose: (
     e.preventDefault();
     let body: NewRequest;
     if (kind === "有給申請") body = { kind, date, days, reason };
-    else if (kind === "打刻修正") body = { kind, date, in: toMin(inT), out: toMin(outT), reason };
+    else if (kind === "打刻修正") body = { kind, date, in: toMin(inT), out: toMin(outT, outNext), reason };
     else {
       const s = toMin(start);
-      const en = toMin(end);
+      const en = toMin(end, endNext);
       if (s === undefined || en === undefined) return setError("開始と終了の時刻を入力してください");
       body = { kind, date, start: s, end: en, reason };
     }
@@ -195,6 +198,9 @@ function RequestDialog({ open, onClose, onCreated }: { open: boolean; onClose: (
             <label>終了<input className="field" type="time" value={end} onChange={(e) => setEnd(e.target.value)} required /></label>
           </div>
         ) : null}
+        {kind === "残業申請" || kind === "休日出勤" ? (
+          <label className="check"><input type="checkbox" checked={endNext} onChange={(e) => setEndNext(e.target.checked)} /><span>終了は翌日（日をまたぐ）</span></label>
+        ) : null}
         {kind === "有給申請" ? (
           <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
             <legend style={{ fontWeight: 700, color: "var(--ink-2)", padding: 0, marginBottom: 5 }}>取得日数</legend>
@@ -210,6 +216,7 @@ function RequestDialog({ open, onClose, onCreated }: { open: boolean; onClose: (
               <label>正しい出勤時刻<input className="field" type="time" value={inT} onChange={(e) => setInT(e.target.value)} /></label>
               <label>正しい退勤時刻<input className="field" type="time" value={outT} onChange={(e) => setOutT(e.target.value)} /></label>
             </div>
+            <label className="check"><input type="checkbox" checked={outNext} onChange={(e) => setOutNext(e.target.checked)} /><span>退勤は翌日（夜勤など、日をまたぐ）</span></label>
             <p className="note" style={{ margin: 0 }}>直す方だけ入力してください。その日の打刻が無い場合は両方を入力します。</p>
           </>
         ) : null}

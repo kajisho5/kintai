@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   addDays,
   deriveDay,
+  MAX_SHIFT_MIN,
   dowOf,
   durJa,
   hhmm,
@@ -88,16 +89,20 @@ export function workRoutes(): Hono<Env> {
 
 const punchState = (snap: Snapshot, me: Employee): PunchStateResponse => {
   const { ledger } = snap;
+  const shift = ledger.shiftFor(me.id, snap.nowMin);
   const day = ledger.todayResult(me, snap.nowMin);
-  const month = ledger.monthOf(me, snap.today.slice(0, 7));
-  const d = deriveDay(ledger.eventsOf(me.id, snap.today));
+  const d = deriveDay(ledger.eventsOf(me.id, shift.date));
+  const ym = snap.today.slice(0, 7);
+  const month = ledger.monthOf(me, ym);
   const risk = ledger.riskOf(me);
   return {
-    date: snap.today,
-    nowMin: snap.nowMin,
+    date: shift.date,
+    offsetMin: shift.offset,
+    nowMin: snap.nowMin + shift.offset,
     events: { in: d.in, out: d.out, breaks: d.breaks, openBreak: d.openBreak },
     day,
-    monthOvertimeMin: month.result.overtimeMin + day.dailyOvertimeMin,
+    // 月をまたいで終わる日またぎの勤務は、前月の勤務として扱うので、今月の累計には足さない
+    monthOvertimeMin: month.result.overtimeMin + (shift.date.slice(0, 7) === ym ? day.dailyOvertimeMin : 0),
     outlook: risk.outlook,
     riskLevel: risk.level,
     leaveRemaining: ledger.leaveOf(me).remaining,
@@ -115,20 +120,28 @@ app.post("/api/punch", async (c) => {
   const { action } = parse(z.object({ action: z.enum(["in", "out", "break_start", "break_end"]) }), await c.req.json().catch(() => null));
   const now = clock.now();
   const min = Math.floor(now.min);
+  const eventsOn = (date: string) =>
+    deriveDay(db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE emp_id = ? AND date = ? ORDER BY seq").all(me.id, date) as never);
   tx(db, () => {
-    const rows = db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE emp_id = ? AND date = ? ORDER BY seq").all(me.id, now.date) as never;
-    const d = deriveDay(rows);
+    const yesterday = addDays(now.date, -1);
+    const today = eventsOn(now.date);
+    const prev = eventsOn(yesterday);
+    // 昨日の出勤から退勤していない勤務が続いている（日またぎ）なら、その勤務への打刻とする
+    const carrying = today.in === undefined && prev.in !== undefined && prev.out === undefined && 1440 + min - prev.in <= MAX_SHIFT_MIN;
+    if (action === "in" && carrying) throw new ApiError(409, "前の勤務（昨日の出勤）が退勤になっていません。先に退勤を記録してください");
+    const target = carrying ? { date: yesterday, off: 1440, d: prev } : { date: now.date, off: 0, d: today };
+    const d = target.d;
+    const at = min + target.off;
     if (action === "in" && d.in !== undefined) throw new ApiError(409, "本日はすでに出勤を記録しています");
     if (action !== "in" && d.in === undefined) throw new ApiError(409, "先に出勤を記録してください");
     if (d.out !== undefined) throw new ApiError(409, "本日はすでに退勤を記録しています");
     if (action === "break_start" && d.openBreak !== undefined) throw new ApiError(409, "すでに休憩中です");
     if (action === "break_end" && d.openBreak === undefined) throw new ApiError(409, "休憩を開始していません");
-    if (action === "out" && d.openBreak !== undefined) {
-      // 休憩中の退勤は、休憩を退勤時刻で閉じてから記録する
-      db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, source, created_at) VALUES (?, ?, 'break_end', ?, 'punch', ?)").run(me.id, now.date, min, now.ts);
-    }
-    db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, source, created_at) VALUES (?, ?, ?, ?, 'punch', ?)").run(me.id, now.date, action, min, now.ts);
-    audit(db, now.ts, me.id, "punch", { action: PUNCH_LABEL[action], date: now.date, min });
+    const ins = db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, source, created_at) VALUES (?, ?, ?, ?, 'punch', ?)");
+    // 休憩中の退勤は、休憩を退勤時刻で閉じてから記録する
+    if (action === "out" && d.openBreak !== undefined) ins.run(me.id, target.date, "break_end", at, now.ts);
+    ins.run(me.id, target.date, action, at, now.ts);
+    audit(db, now.ts, me.id, "punch", { action: PUNCH_LABEL[action], date: target.date, min: at });
   });
   return c.json(punchState(snapshot(db, clock), me));
 });

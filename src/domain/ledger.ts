@@ -10,7 +10,7 @@ import {
   type MonthlyTotals,
 } from "../engine";
 import { barsFor } from "./bars";
-import { addMonths, datesOfMonth, diffDays, dowOf, fiscalStartYm, monthsBetween } from "./calendar";
+import { addDays, addMonths, datesOfMonth, diffDays, dowOf, fiscalStartYm, monthsBetween } from "./calendar";
 import type {
   Calendar,
   DayPlan,
@@ -18,14 +18,18 @@ import type {
   LeaveInfo,
   LeaveRow,
   MonthData,
+  Bar,
   Outlook,
   PunchEvent,
   Risk,
   RiskLevel,
+  Shift,
   TodayRow,
 } from "./types";
 
 const SCHED_GRACE_MIN = 15;
+/** 出勤から退勤までの上限。これを超えて退勤が無い勤務は、日またぎで続いているのではなく打刻漏れとみなす */
+export const MAX_SHIFT_MIN = 20 * 60;
 
 interface Derived {
   in?: number;
@@ -64,7 +68,7 @@ export class Ledger {
     readonly cal: Calendar,
     events: PunchEvent[],
     leaves: LeaveRow[],
-    private readonly opts: { specialClause: boolean; fiscalStartMonth?: number },
+    private readonly opts: { specialClause: boolean; fiscalStartMonth?: number; legalHolidayDow?: number },
   ) {
     for (const e of events) {
       const k = `${e.empId}|${e.date}`;
@@ -91,6 +95,26 @@ export class Ledger {
     return this.leaves.get(empId)?.get(date) ?? 0;
   }
 
+  private get legalDow(): number {
+    return this.opts.legalHolidayDow ?? 0;
+  }
+
+  /**
+   * いま進行中の勤務（日またぎ）の判定。今日の出勤打刻があれば今日。なければ、昨日の勤務が続いている（退勤前）か、
+   * 今日に入ってから退勤した場合は昨日の勤務を返す。どちらでもなければ今日。
+   */
+  shiftFor(empId: string, nowMin: number): Shift & { open: boolean } {
+    const today = this.cal.today;
+    if (deriveDay(this.eventsOf(empId, today)).in !== undefined) return { date: today, offset: 0, open: false };
+    const yesterday = addDays(today, -1);
+    const y = deriveDay(this.eventsOf(empId, yesterday));
+    if (y.in !== undefined) {
+      if (y.out === undefined && 1440 + nowMin - y.in <= MAX_SHIFT_MIN) return { date: yesterday, offset: 1440, open: true };
+      if (y.out !== undefined && y.out >= 1440) return { date: yesterday, offset: 1440, open: false };
+    }
+    return { date: today, offset: 0, open: false };
+  }
+
   private isScheduled(emp: Employee, date: string): boolean {
     return emp.workDays.includes(dowOf(date)) && !this.cal.holidays[date];
   }
@@ -106,17 +130,27 @@ export class Ledger {
 
     if (d.in !== undefined) {
       if (d.out === undefined) {
-        return { date, kind: "incomplete", start: d.in, breaks: d.breaks, note: "退勤打刻なし" };
+        const going = date === addDays(this.cal.today, -1) && this.cal.nowMin !== undefined && 1440 + this.cal.nowMin - d.in <= MAX_SHIFT_MIN;
+        return { date, kind: "incomplete", start: d.in, breaks: d.breaks, note: going ? "勤務中（日またぎ）" : "退勤打刻なし" };
       }
       if (d.out < d.in) return { date, kind: "incomplete", start: d.in, breaks: [], note: "打刻の不整合" };
       const breaks = [...d.breaks];
       if (d.openBreak !== undefined) breaks.push({ start: d.openBreak, end: d.out });
-      const offDay = w === 0 || !!hol || !emp.workDays.includes(w);
+      const offDay = w === this.legalDow || !!hol || !emp.workDays.includes(w);
       const note = leave > 0 && leave < 1 ? "半休" : offDay ? (hol ? "祝日出勤" : "休日出勤") : undefined;
-      return { date, kind: "work", start: d.in, end: d.out, breaks, isLegalHoliday: w === 0, note };
+      return {
+        date,
+        kind: "work",
+        start: d.in,
+        end: d.out,
+        breaks,
+        isLegalHoliday: w === this.legalDow,
+        nextIsLegalHoliday: dowOf(addDays(date, 1)) === this.legalDow,
+        note,
+      };
     }
     if (leave > 0) return { date, kind: "leave", breaks: [], note: leave < 1 ? "半休" : "有給休暇" };
-    if (w === 0) return { date, kind: "off", breaks: [], note: "法定休日" };
+    if (w === this.legalDow) return { date, kind: "off", breaks: [], note: "法定休日" };
     if (hol) return { date, kind: "off", breaks: [], note: hol };
     if (!emp.workDays.includes(w)) return { date, kind: "off", breaks: [], note: "所定休日" };
     if (date < this.cal.today && date >= emp.hired) return { date, kind: "absent", breaks: [], note: "打刻なし" };
@@ -139,6 +173,7 @@ export class Ledger {
       work: { start: p.start!, end: p.end! },
       breaks: p.breaks,
       isLegalHoliday: p.isLegalHoliday,
+      nextIsLegalHoliday: p.nextIsLegalHoliday,
     });
     const leaveMap = this.leaves.get(emp.id);
     const leaveDays = leaveMap
@@ -227,49 +262,66 @@ export class Ledger {
   todayRow(emp: Employee, nowMin: number): TodayRow {
     const date = this.cal.today;
     const who = { id: emp.id, name: emp.name, dept: emp.dept, title: emp.title, kind: emp.kind };
-    const d = deriveDay(this.eventsOf(emp.id, date));
-    const leave = this.leaveDaysOn(emp.id, date);
+    // 日またぎの勤務は、始業日の打刻として記録されている。以降の時刻は始業日の 0:00 基準で計算し、最後に今日基準へ直す
+    const shift = this.shiftFor(emp.id, nowMin);
+    const off = shift.offset;
+    const n = nowMin + off;
+    const d = deriveDay(this.eventsOf(emp.id, shift.date));
+    const leave = shift.date === date ? this.leaveDaysOn(emp.id, date) : 0;
+    const shiftBars = (bars: Bar[]): Bar[] => (off ? bars.map((b) => ({ ...b, from: b.from - off, to: b.to - off })) : bars);
 
     if (d.in !== undefined) {
       const open = d.out === undefined && d.openBreak !== undefined;
       const breaks = [...d.breaks];
-      if (open) breaks.push({ start: d.openBreak!, end: nowMin });
-      let end = d.out ?? nowMin;
-      let status: TodayRow["status"] = d.out !== undefined ? "left" : open ? "break" : "working";
-      let bars;
+      if (open) breaks.push({ start: d.openBreak!, end: n });
+      const status: TodayRow["status"] = d.out !== undefined ? "left" : open ? "break" : "working";
+      let bars: Bar[];
       if (status === "left") {
-        bars = barsFor(d.in, end, breaks, end + 1);
+        bars = barsFor(d.in, d.out!, breaks, d.out! + 1);
       } else {
         // 退勤前は所定終了時刻までの予定も帯で示す（休憩未取得なら所定の休憩も差し引く）。半休は所定時間が半分になる
         const sched = emp.baseMin * (leave > 0 && leave < 1 ? 1 - leave : 1);
         const len = plannedBreakLen(sched);
         const planBreaks = [...breaks];
         const bStart = Math.max(720, d.in + 240);
-        if (len && breaks.length === 0 && nowMin < bStart + len) planBreaks.push({ start: bStart, end: bStart + len });
-        const planEnd = Math.max(nowMin, d.in + sched + (breaks.length ? 0 : len));
-        bars = barsFor(d.in, planEnd, planBreaks, nowMin);
-        end = planEnd;
+        if (len && breaks.length === 0 && n < bStart + len) planBreaks.push({ start: bStart, end: bStart + len });
+        const planEnd = Math.max(n, d.in + sched + (breaks.length ? 0 : len));
+        bars = barsFor(d.in, planEnd, planBreaks, n);
       }
       const worked = bars.filter((b) => !b.plan).reduce((s, b) => s + (b.to - b.from), 0);
-      return { emp: who, status, note: leave > 0 && leave < 1 ? "半休" : undefined, start: d.in, end: d.out, bars, workedMin: worked };
+      return {
+        emp: who,
+        status,
+        note: leave > 0 && leave < 1 ? "半休" : shift.date !== date ? "日またぎ" : undefined,
+        start: d.in - off,
+        end: d.out !== undefined ? d.out - off : undefined,
+        bars: shiftBars(bars),
+        workedMin: worked,
+      };
     }
     if (leave > 0) return { emp: who, status: "leave", note: leave < 1 ? "半休" : "有給休暇", bars: [], workedMin: 0 };
     const hol = this.cal.holidays[date];
     if (!this.isScheduled(emp, date) || date < emp.hired) {
-      return { emp: who, status: "off", note: hol ?? (dowOf(date) === 0 ? "法定休日" : "所定休日"), bars: [], workedMin: 0 };
+      return { emp: who, status: "off", note: hol ?? (dowOf(date) === this.legalDow ? "法定休日" : "所定休日"), bars: [], workedMin: 0 };
     }
     return { emp: who, status: nowMin > emp.schedStart + SCHED_GRACE_MIN ? "missing" : "before", bars: [], workedMin: 0 };
   }
 
-  /** 本日分の集計（打刻途中でも現在時刻までで計算） */
+  /** 進行中の勤務の集計（打刻途中でも現在時刻までで計算。日またぎなら始業日の勤務として計算） */
   todayResult(emp: Employee, nowMin: number): DayResult {
-    const date = this.cal.today;
-    const d = deriveDay(this.eventsOf(emp.id, date));
-    if (d.in === undefined) return calcDay({ date });
-    const end = Math.max(d.in, d.out ?? nowMin);
+    const shift = this.shiftFor(emp.id, nowMin);
+    const d = deriveDay(this.eventsOf(emp.id, shift.date));
+    if (d.in === undefined) return calcDay({ date: shift.date });
+    const end = Math.max(d.in, d.out ?? nowMin + shift.offset);
     const breaks = [...d.breaks];
     if (d.openBreak !== undefined) breaks.push({ start: d.openBreak, end });
-    return calcDay({ date, work: { start: d.in, end }, breaks, isLegalHoliday: dowOf(date) === 0 });
+    return calcDay({
+      date: shift.date,
+      work: { start: d.in, end },
+      breaks,
+      isLegalHoliday: dowOf(shift.date) === this.legalDow,
+      nextIsLegalHoliday: dowOf(addDays(shift.date, 1)) === this.legalDow,
+    });
   }
 
   // ------------------------------------------------------------ 有給

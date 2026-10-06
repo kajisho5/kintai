@@ -1,4 +1,4 @@
-import { Ledger, fiscalStartYm, monthsBetween, type Employee, type LeaveRow, type PunchEvent } from "../domain";
+import { Ledger, addDays, fiscalStartYm, monthsBetween, type Employee, type LeaveRow, type PunchEvent } from "../domain";
 import type { Clock } from "./clock";
 import type { Db } from "./db";
 
@@ -85,14 +85,16 @@ export function snapshot(db: Db, clock: Clock): Snapshot {
   const now = clock.now();
   const settings = loadSettings(db);
   const fyStart = fiscalStartYm(now.date, settings.fyStartMonth);
+  // 協定期間の初日に日またぎで終わる勤務のため、前日から読む
+  const from = addDays(`${fyStart}-01`, -1);
   const events = (
-    db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE date >= ? ORDER BY seq").all(`${fyStart}-01`) as unknown as PunchEvent[]
+    db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE date >= ? ORDER BY seq").all(from) as unknown as PunchEvent[]
   ).map((e) => ({ ...e }));
   const leaves = db.prepare("SELECT emp_id AS empId, date, days FROM paid_leave").all() as unknown as LeaveRow[];
   const holidays = Object.fromEntries(
     (db.prepare("SELECT date, name FROM holidays").all() as unknown as { date: string; name: string }[]).map((h) => [h.date, h.name]),
   );
-  const ledger = new Ledger({ today: now.date, holidays }, events, leaves.map((l) => ({ ...l })), {
+  const ledger = new Ledger({ today: now.date, nowMin: now.min, holidays }, events, leaves.map((l) => ({ ...l })), {
     specialClause: settings.specialClause,
     fiscalStartMonth: settings.fyStartMonth,
   });

@@ -75,7 +75,8 @@ export function Punch() {
   if (ev.out !== undefined) timeline.push({ t: ev.out, label: "退勤", kind: "out" });
   timeline.sort((a, b) => a.t - b.t);
 
-  const elapsed = ev.in === undefined ? "" : `出勤から ${dur((ev.out ?? now.min) - ev.in)} 経過`;
+  const carried = s.offsetMin > 0;
+  const elapsed = ev.in === undefined ? "" : `出勤から ${dur((ev.out ?? now.min + s.offsetMin) - ev.in)} 経過`;
   const monthOt = s.monthOvertimeMin;
 
   return (
@@ -122,7 +123,8 @@ export function Punch() {
 
         <div className="stack">
           <section className="panel" aria-labelledby="rec">
-            <div className="panel-head"><h2 id="rec">本日の記録</h2></div>
+            <div className="panel-head"><h2 id="rec">{carried ? "日またぎの勤務の記録" : "本日の記録"}</h2></div>
+            {carried ? <p className="note" style={{ margin: "10px 20px 0" }}>{jpDate(s.date)}に出勤した勤務です。25:00のように、翌日の時刻は24時以降で表示します。</p> : null}
             {timeline.length === 0 ? (
               <div className="empty"><b>まだ打刻がありません</b>「出勤」を押すと記録が始まります。</div>
             ) : (
@@ -138,7 +140,7 @@ export function Punch() {
           </section>
 
           <section className="panel" aria-labelledby="sum">
-            <div className="panel-head"><h2 id="sum">本日の集計</h2></div>
+            <div className="panel-head"><h2 id="sum">{carried ? "この勤務の集計" : "本日の集計"}</h2></div>
             <div className="panel-body">
               <dl className="kv">
                 <div><dt>実働</dt><dd>{durOrDash(s.day.workMin)}</dd></div>

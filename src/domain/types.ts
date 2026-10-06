@@ -49,6 +49,8 @@ export interface LeaveRow {
 export interface Calendar {
   /** 会社のタイムゾーンでの今日 (YYYY-MM-DD) */
   today: string;
+  /** 今日の 0:00 からの経過分（日またぎの勤務が勤務中かの判定に使う。省略時は判定しない） */
+  nowMin?: number;
   holidays: Record<string, string>;
 }
 
@@ -61,6 +63,7 @@ export interface DayPlan {
   end?: number;
   breaks: Interval[];
   isLegalHoliday?: boolean;
+  nextIsLegalHoliday?: boolean;
   note?: string;
 }
 
@@ -97,6 +100,14 @@ export interface Bar {
   to: number;
   ot: boolean;
   plan: boolean;
+}
+
+/** いま進行中（または今日に入ってから終わった）勤務。日またぎの勤務は、始業日の打刻として記録されている */
+export interface Shift {
+  /** 始業日（打刻の日付） */
+  date: string;
+  /** 始業日の 0:00 から見た、今日の 0:00 の位置（始業日が昨日なら 1440） */
+  offset: number;
 }
 
 export type Status = "working" | "break" | "left" | "before" | "missing" | "leave" | "off";
