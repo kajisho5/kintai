@@ -226,23 +226,24 @@ export function snapshot(db: Db, clock: Clock, opts: SnapshotOptions = {}): Snap
   if (live && live.rev === rev && live.rollbacks === rollbacks && live.date === now.date && live.lastSeq <= lastSeq) {
     liveCache.delete(key);
     liveCache.set(key, live); // 使った順に並べ替える
-    if (live.lastSeq === lastSeq && live.snap.nowMin === now.min) return live.snap;
+    const geoSiteCount = geoSiteCountOf(db); // 打刻場所の表は変更回数に入れていない（件数だけ、毎回読む）
+    if (live.lastSeq === lastSeq && live.snap.nowMin === now.min && live.snap.geoSiteCount === geoSiteCount) return live.snap;
     const added =
       live.lastSeq === lastSeq
         ? []
-        : (db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE seq > ? ORDER BY seq").all(live.lastSeq) as unknown as PunchEvent[]);
+        : (db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE seq > ? AND seq <= ? ORDER BY seq").all(live.lastSeq, lastSeq) as unknown as PunchEvent[]);
     // 読み込んだ範囲より前の打刻（過去の日付の修正など）が増えたときは、作り直す
     if (!added.some((e) => e.date < live.from || live.dataFrom === undefined || e.date < live.dataFrom)) {
       live.snap.ledger.addEvents(added);
       live.snap.ledger.advance(now.min);
       live.lastSeq = lastSeq;
       live.weight += added.length;
-      live.snap = { ...live.snap, nowMin: now.min, today: now.date, geoSiteCount: geoSiteCountOf(db) };
+      live.snap = { ...live.snap, nowMin: now.min, today: now.date, geoSiteCount };
       snapshotStats.incremental++;
       return live.snap;
     }
   }
-  const built = buildSnapshot(db, clock, opts);
+  const built = buildSnapshot(db, clock, opts, lastSeq);
   snapshotStats.built++;
   liveCache.delete(key);
   liveCache.set(key, { snap: built.snap, rev, rollbacks, date: now.date, lastSeq, from: built.from, dataFrom: built.dataFrom, weight: built.eventCount });
@@ -262,7 +263,7 @@ function previousPeriodYm(db: Db, today: string): string {
   return addYm(fiscalStartYm(`${ymOfDate(today, settings.closingDay)}-01`, settings.fyStartMonth), -1);
 }
 
-function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions): { snap: Snapshot; from: string; dataFrom: string | undefined; eventCount: number } {
+function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions, maxSeq = Number.MAX_SAFE_INTEGER): { snap: Snapshot; from: string; dataFrom: string | undefined; eventCount: number } {
   const now = clock.now();
   const settings = loadSettings(db);
   const currentYm = ymOfDate(now.date, settings.closingDay);
@@ -282,8 +283,8 @@ function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions): { snap: Sna
   const inClause = only ? ` AND emp_id IN (${only.map(() => "?").join(",")})` : "";
   // 社員・日付・記録順に並べて読む（Ledger が、同じ社員・日付の連続した行を、まとめて扱える）
   const events = db
-    .prepare(`SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE date >= ?${inClause} ORDER BY emp_id, date, seq`)
-    .all(from, ...(only ?? [])) as unknown as PunchEvent[];
+    .prepare(`SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE date >= ? AND seq <= ?${inClause} ORDER BY emp_id, date, seq`)
+    .all(from, maxSeq, ...(only ?? [])) as unknown as PunchEvent[];
   const leaves = (only ? only.flatMap((e) => db.prepare("SELECT emp_id AS empId, date, days FROM paid_leave WHERE emp_id = ?").all(e)) : db.prepare("SELECT emp_id AS empId, date, days FROM paid_leave").all()) as unknown as LeaveRow[];
   const holidays = Object.fromEntries(
     (db.prepare("SELECT date, name FROM holidays").all() as unknown as { date: string; name: string }[]).map((h) => [h.date, h.name]),

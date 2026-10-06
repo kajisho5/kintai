@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { addDays } from "../domain";
+import { tx } from "./db";
 import { snapshot, snapshotFresh, snapshotStats, type Snapshot } from "./repo";
 import { setup, TODAY } from "./testkit";
 
@@ -136,5 +137,26 @@ describe("集計の差分更新（ゼロから作った集計と一致する）"
     expect(note(snapshot(db, t.clock))).toBe("退勤打刻なし");
     expect(snapshotStats.built).toBe(built); // 作り直さず、差分で反映している
     expect(digest(snapshot(db, t.clock))).toEqual(digest(snapshotFresh(db, t.clock)));
+  });
+
+  it("打刻場所（位置情報）の登録数の変更は、時刻が同じでも、すぐに反映される", () => {
+    const { t, db } = prep();
+    expect(snapshot(db, t.clock).geoSiteCount).toBe(0);
+    db.prepare("INSERT INTO geo_sites (name, lat, lng, radius_m) VALUES ('本社', 35.0, 139.0, 100)").run();
+    expect(snapshot(db, t.clock).geoSiteCount).toBe(1);
+    db.prepare("DELETE FROM geo_sites").run();
+    expect(snapshot(db, t.clock).geoSiteCount).toBe(0);
+  });
+
+  it("何も書かずに失敗した処理（入力の誤りなど）では、集計を作り直さない。書き込んだあとに失敗（ロールバック）したときは作り直す", () => {
+    const { t, db } = prep();
+    snapshot(db, t.clock);
+    const built = snapshotStats.built;
+    expect(() => tx(db, () => { throw new Error("入力の誤り"); })).toThrow();
+    snapshot(db, t.clock);
+    expect(snapshotStats.built).toBe(built);
+    expect(() => tx(db, () => { db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, created_at) VALUES ('e07', ?, 'in', 540, 1)").run(TODAY); throw new Error("途中で失敗"); })).toThrow();
+    expect(digest(snapshot(db, t.clock))).toEqual(digest(snapshotFresh(db, t.clock)));
+    expect(snapshotStats.built).toBe(built + 1);
   });
 });
