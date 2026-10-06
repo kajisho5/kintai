@@ -160,3 +160,28 @@ describe("ログインの同時試行", () => {
     }
   });
 });
+
+describe("登録メールの迷惑送信への対策", () => {
+  const signup = (t: ReturnType<typeof setup>, code: string, email: string) =>
+    t.call("POST", "/api/signup", { body: { companyName: "アクメ", code, adminName: "青木", email, password: "long-enough-pass-1", acceptTerms: true } });
+
+  it("同じメールアドレス宛の登録は、24時間に3回まで（大文字小文字は区別しない）。ほかのアドレスには影響しない", async () => {
+    const t = setup({ nowMin: 840, at: "14:00" });
+    expect((await signup(t, "acme-a", "victim@example.com")).status).toBe(201);
+    expect((await signup(t, "acme-b", "VICTIM@example.com")).status).toBe(201);
+    expect((await signup(t, "acme-c", " victim@example.com")).status).toBe(201);
+    const blocked = await signup(t, "acme-d", "victim@example.com");
+    expect(blocked.status).toBe(429);
+    expect(blocked.json.error).toContain("メールアドレス");
+    expect((await signup(t, "acme-e", "other@example.com")).status).toBe(201);
+    expect(t.mailer.sent.filter((m) => m.to === "victim@example.com").length).toBe(3);
+    t.clock.set("2026-10-07", "15:00"); // 24時間後には、また登録できる
+    expect((await signup(t, "acme-f", "victim@example.com")).status).toBe(201);
+  });
+
+  it("入力の誤り（企業IDの重複など）で終わった試行は、メールを送らないので、回数に数えない", async () => {
+    const t = setup({ nowMin: 840, at: "14:00" });
+    for (let i = 0; i < 5; i++) expect((await signup(t, "demo", "x@example.com")).status).toBe(400); // 予約語
+    expect((await signup(t, "acme-a", "x@example.com")).status).toBe(201);
+  });
+});

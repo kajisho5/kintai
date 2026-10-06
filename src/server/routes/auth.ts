@@ -75,6 +75,9 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
   const accountThrottle = new LoginThrottle(20, 15 * 60_000);
   const ipFails = new RateLimiter(20, 10 * 60_000);
   const signupLimit = new RateLimiter(10, 60 * 60_000);
+  // 他人のアドレスに登録メールを送りつける迷惑行為への対策。IPを変えても、同じアドレス宛・サービス全体での数を抑える
+  const signupMailTo = new RateLimiter(3, 24 * 3600_000);
+  const signupAll = new RateLimiter(300, 60 * 60_000);
   const checkLimit = new RateLimiter(60, 10 * 60_000);
   const totpThrottle = new LoginThrottle(5, 5 * 60_000); // 二段階目のコードを5回間違えると、5分ロック
   const forgotIp = new RateLimiter(10, 10 * 60_000);
@@ -170,6 +173,13 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
     const codeErr = validateCode(b.code);
     if (codeErr) throw new ApiError(400, codeErr);
     if (manager.findByCode(b.code)) throw new ApiError(409, "この企業IDはすでに使われています");
+    if (appUrl) {
+      const mailKey = b.email.trim().toLowerCase();
+      if (signupAll.blocked("all", now)) throw new ApiError(429, "ただいま登録が混み合っています。しばらくしてからお試しください");
+      if (signupMailTo.blocked(mailKey, now)) throw new ApiError(429, "このメールアドレスでの登録の試行が多すぎます。24時間ほどあけてお試しください");
+      signupAll.record("all", now);
+      signupMailTo.record(mailKey, now);
+    }
 
     const pwHash = await hashPassword(b.password); // 重い計算は、会社を作る前・トランザクションの外で行う
     const tz = "Asia/Tokyo";
