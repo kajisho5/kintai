@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { addDays } from "../domain";
 import { tx } from "./db";
-import { snapshot, snapshotFresh, snapshotStats, type Snapshot } from "./repo";
+import { forgetSnapshots, refreshSnapshots, snapshot, warmSnapshot, snapshotFresh, snapshotStats, type Snapshot } from "./repo";
 import { setup, TODAY } from "./testkit";
 
 /** 全社員の主な集計結果。差分で更新した集計と、ゼロから作った集計を比べるために使う */
@@ -75,6 +75,15 @@ describe("集計の差分更新（ゼロから作った集計と一致する）"
         // 過去数日の打刻（修正申請の承認に相当）
         const d = addDays(TODAY, -2 - Math.floor(rand() * 20));
         for (const [k, m] of [["in", 540], ["out", 1080 + Math.floor(rand() * 200)]] as const) ins.run(id, d, k, m);
+      } else if (op < 0.82) {
+        // 社員・シフト・有給の変更
+        const k = Math.floor(rand() * 5);
+        const d = addDays(TODAY, Math.floor(rand() * 40) - 20);
+        if (k === 0) db.prepare("UPDATE employees SET work_style = ? WHERE id = ?").run(pick(["fixed", "monthly", "yearly", "weekly", "flex"]), id);
+        else if (k === 1) db.prepare("INSERT OR REPLACE INTO schedules (emp_id, date, kind, start, end, break_min) VALUES (?, ?, ?, 600, 1140, 60)").run(id, d, pick(["work", "work", "work"]));
+        else if (k === 2) db.prepare("INSERT OR REPLACE INTO schedules (emp_id, date, kind, start, end, break_min) VALUES (?, ?, 'legal_off', NULL, NULL, 0)").run(id, d);
+        else if (k === 3) db.prepare("INSERT INTO paid_leave (emp_id, date, days) VALUES (?, ?, ?)").run(id, d, pick([1, 0.5]));
+        else db.prepare("DELETE FROM schedules WHERE emp_id = ? AND date = ?").run(id, d);
       } else {
         minute += 1 + Math.floor(rand() * 5);
         t.clock.set(TODAY, `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`);
@@ -86,16 +95,45 @@ describe("集計の差分更新（ゼロから作った集計と一致する）"
     expect(snapshotStats.built - before.built).toBe(0);
   }, 120_000);
 
-  it("社員・設定・シフト・有給・祝日が変わったときは作り直し、結果は一致する", () => {
+  it("社員・シフト・有給の変更は、その社員の分だけ差分で反映し、結果はゼロから作った結果と一致する", () => {
+    const { t, db } = prep();
+    snapshot(db, t.clock);
+    const d = (n: number) => addDays(TODAY, n);
+    const writes: [string, unknown[]][] = [
+      ["UPDATE employees SET work_style = 'fixed' WHERE id = 'e02'", []],
+      ["UPDATE employees SET hired = ? WHERE id = 'e06'", [d(-5)]],
+      ["UPDATE employees SET left_on = ? WHERE id = 'e07'", [d(-1)]],
+      ["UPDATE employees SET work_days = '[1,2,3]' WHERE id = 'e08'", []],
+      ["UPDATE employees SET active = 0 WHERE id = 'e09'", []],
+      ["INSERT OR REPLACE INTO schedules (emp_id, date, kind, start, end, break_min) VALUES ('e03', ?, 'legal_off', NULL, NULL, 0)", [d(2)]],
+      ["INSERT OR REPLACE INTO schedules (emp_id, date, kind, start, end, break_min) VALUES ('e10', ?, 'work', 600, 1140, 60)", [d(-2)]],
+      ["DELETE FROM schedules WHERE emp_id = 'e04'", []],
+      ["INSERT INTO paid_leave (emp_id, date, days) VALUES ('e06', ?, 1)", [d(-3)]],
+      ["DELETE FROM paid_leave WHERE emp_id = 'e06'", []],
+      ["UPDATE employees SET password_hash = 'x' WHERE id = 'e01'", []],
+    ];
+    for (const [sql, args] of writes) {
+      const built = snapshotStats.built;
+      db.prepare(sql).run(...(args as never[]));
+      expect(digest(snapshot(db, t.clock)), sql).toEqual(digest(snapshotFresh(db, t.clock)));
+      expect(snapshotStats.built, sql).toBe(built);
+    }
+    // 社員の追加・シフトの大量の取り込み（変更が多い）は、作り直しになっても、結果は一致する
+    const built = snapshotStats.built;
+    db.exec("BEGIN");
+    const put = db.prepare("INSERT OR REPLACE INTO schedules (emp_id, date, kind, start, end, break_min) VALUES (?, ?, 'work', 540, 1080, 60)");
+    for (let i = 0; i < 2100; i++) put.run(`e${String(1 + (i % 16)).padStart(2, "0")}`, d(-30 + Math.floor(i / 16)));
+    db.exec("COMMIT");
+    expect(digest(snapshot(db, t.clock))).toEqual(digest(snapshotFresh(db, t.clock)));
+    expect(snapshotStats.built).toBe(built + 1);
+  });
+
+  it("設定・祝日が変わったときは作り直し、結果は一致する", () => {
     const { t, db } = prep();
     snapshot(db, t.clock);
     const writes: [string, unknown[]][] = [
-      ["UPDATE employees SET work_style = 'fixed' WHERE id = 'e02'", []],
       ["INSERT OR REPLACE INTO settings (key, value) VALUES ('closing_day', '15')", []],
-      ["INSERT OR REPLACE INTO schedules (emp_id, date, kind, start, end, break_min) VALUES ('e03', ?, 'legal_off', NULL, NULL, 0)", [addDays(TODAY, 2)]],
-      ["INSERT INTO paid_leave (emp_id, date, days) VALUES ('e06', ?, 1)", [addDays(TODAY, -3)]],
       ["INSERT OR REPLACE INTO holidays (date, name) VALUES (?, '臨時休日')", [addDays(TODAY, -4)]],
-      ["DELETE FROM schedules WHERE emp_id = 'e04'", []],
       ["INSERT OR REPLACE INTO settings (key, value) VALUES ('closing_day', '0')", []],
     ];
     for (const [sql, args] of writes) {
@@ -158,5 +196,27 @@ describe("集計の差分更新（ゼロから作った集計と一致する）"
     expect(() => tx(db, () => { db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, created_at) VALUES ('e07', ?, 'in', 540, 1)").run(TODAY); throw new Error("途中で失敗"); })).toThrow();
     expect(digest(snapshot(db, t.clock))).toEqual(digest(snapshotFresh(db, t.clock)));
     expect(snapshotStats.built).toBe(built + 1);
+  });
+
+  it("先に作っておく: 日付が変わったあと、利用者が開く前に更新でき、開いたときは待たない。事前の作成も、接続を閉じたときの破棄もできる", async () => {
+    const { t, db } = prep();
+    const built = snapshotStats.built;
+    warmSnapshot(db, t.clock);
+    expect(snapshotStats.built).toBe(built + 1);
+    const first = snapshot(db, t.clock);
+    expect(snapshotStats.built).toBe(built + 1); // 事前に作ったものを使う
+
+    t.clock.set("2026-10-07", "00:00");
+    await refreshSnapshots(); // 日付が変わった直後の定期更新（ほかのテストが残した集計も更新される）
+    const refreshed = snapshotStats.built;
+    expect(refreshed).toBeGreaterThanOrEqual(built + 2);
+    const second = snapshot(db, t.clock);
+    expect(snapshotStats.built).toBe(refreshed); // 利用者が開いたときは、作り直さない
+    expect(second.today).toBe("2026-10-07");
+    expect(second).not.toBe(first);
+
+    forgetSnapshots(db);
+    snapshot(db, t.clock);
+    expect(snapshotStats.built).toBe(refreshed + 1);
   });
 });

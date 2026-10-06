@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, statSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -6,6 +6,7 @@ import { openDb, type Db } from "./db";
 import { migrate } from "./migrations";
 import { PLAN } from "./plans";
 import { syncNationalHolidays } from "./holidays";
+import { forgetSnapshots } from "./repo";
 
 export type TenantStatus = "trialing" | "active" | "past_due" | "canceled" | "suspended";
 
@@ -276,6 +277,16 @@ export class TenantManager {
     return Number(this.control.prepare("DELETE FROM email_verifications WHERE expires_at < ?").run(nowMs - graceMs).changes);
   }
 
+  /** テナントのDBファイルの大きさ（バイト）。メモリ上のDBでは 0 */
+  dbFileSize(tenantId: string): number {
+    if (this.tenantDir === ":memory:") return 0;
+    try {
+      return statSync(join(this.tenantDir, `${tenantId}.db`)).size;
+    } catch {
+      return 0;
+    }
+  }
+
   /** テナントの DB。初回に開くとき、マイグレーションと祝日データの同期を行う */
   db(tenantId: string): Db {
     const hit = this.open.get(tenantId);
@@ -296,6 +307,7 @@ export class TenantManager {
     const now = Date.now();
     const idle = [...this.open.entries()].filter(([, v]) => now - v.used > 60_000).sort((a, b) => a[1].used - b[1].used);
     for (const [id, v] of idle.slice(0, this.open.size - this.maxOpen)) {
+      forgetSnapshots(v.db);
       v.db.close();
       this.open.delete(id);
     }
@@ -315,6 +327,7 @@ export class TenantManager {
   purge(tenantId: string): void {
     const open = this.open.get(tenantId);
     if (open) {
+      forgetSnapshots(open.db);
       open.db.close();
       this.open.delete(tenantId);
     }
@@ -324,7 +337,10 @@ export class TenantManager {
   }
 
   close(): void {
-    for (const v of this.open.values()) v.db.close();
+    for (const v of this.open.values()) {
+      forgetSnapshots(v.db);
+      v.db.close();
+    }
     this.open.clear();
     this.control.close();
   }

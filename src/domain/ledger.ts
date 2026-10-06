@@ -97,6 +97,11 @@ function nested<V>(m: Map<string, Map<string, V>>, id: string): Map<string, V> {
   return x;
 }
 
+function addLeave(m: Map<string, Map<string, number>>, l: LeaveRow): void {
+  const byDate = nested(m, l.empId);
+  byDate.set(l.date, (byDate.get(l.date) ?? 0) + l.days);
+}
+
 const NO_EVENTS = Object.freeze([]) as unknown as PunchEvent[];
 
 export class Ledger {
@@ -106,11 +111,10 @@ export class Ledger {
   // 社員ごとの集計の使い回し（社員単位で捨てられるよう、社員 → キー の入れ子）
   private monthCache = new Map<string, Map<string, MonthData>>();
   private riskCache = new Map<string, Map<string, Risk>>();
-  private schedules = new Map<string, ScheduleRow>();
-  /** シフトを1件でも持つ社員（持たない社員は、法定休日の判定を曜日だけで済ませる） */
-  private scheduled = new Set<string>();
-  /** 社員×週（日曜始まり）ごとの、シフトで指定した法定休日（指定がなければ null） */
-  private legalOfWeek = new Map<string, Set<string> | null>();
+  /** 社員 → 日付 → シフト。シフトを1件でも持つ社員だけが入る（持たない社員は、法定休日の判定を曜日だけで済ませる） */
+  private schedules = new Map<string, Map<string, ScheduleRow>>();
+  /** 社員 → 週（日曜始まり）→ シフトで指定した法定休日（指定がなければ null） */
+  private legalOfWeek = new Map<string, Map<string, Set<string> | null>>();
   private periodCache = new Map<string, Map<string, PeriodComputed>>();
   private planCache = new Map<string, Map<string, DayPlan>>();
 
@@ -120,10 +124,7 @@ export class Ledger {
     leaves: LeaveRow[],
     private readonly opts: LedgerOptions,
   ) {
-    for (const r of opts.schedules ?? []) {
-      this.schedules.set(`${r.empId}|${r.date}`, r);
-      this.scheduled.add(r.empId);
-    }
+    for (const r of opts.schedules ?? []) nested(this.schedules, r.empId).set(r.date, r);
     // 同じ社員・日付の行が続いていれば、検索を省く（読み込みは、社員・日付の順に並んでいる）
     let lastEmp = "";
     let lastDate = "";
@@ -145,11 +146,7 @@ export class Ledger {
       lastEmp = e.empId;
       lastDate = e.date;
     }
-    for (const l of leaves) {
-      let m = this.leaves.get(l.empId);
-      if (!m) this.leaves.set(l.empId, (m = new Map()));
-      m.set(l.date, (m.get(l.date) ?? 0) + l.days);
-    }
+    for (const l of leaves) addLeave(this.leaves, l);
   }
 
   get today(): string {
@@ -192,6 +189,27 @@ export class Ledger {
         this.dropAggregates(id);
       }
     }
+  }
+
+  /** 社員のシフトを、読み直した内容に入れ替える（その社員の集計は捨てる） */
+  replaceSchedules(empId: string, rows: ScheduleRow[]): void {
+    this.schedules.delete(empId);
+    for (const r of rows) nested(this.schedules, empId).set(r.date, r);
+    this.invalidateEmployee(empId);
+  }
+
+  /** 社員の有給取得日を、読み直した内容に入れ替える（その社員の集計は捨てる） */
+  replaceLeaves(empId: string, rows: LeaveRow[]): void {
+    this.leaves.delete(empId);
+    for (const r of rows) addLeave(this.leaves, r);
+    this.invalidateEmployee(empId);
+  }
+
+  /** 社員の情報（入社日・勤務区分など）やシフト・有給が変わったとき、その社員の集計を捨てる */
+  invalidateEmployee(empId: string): void {
+    this.planCache.delete(empId);
+    this.legalOfWeek.delete(empId);
+    this.dropAggregates(empId);
   }
 
   private dropAggregates(empId: string): void {
@@ -239,7 +257,7 @@ export class Ledger {
   }
 
   scheduleOf(empId: string, date: string): ScheduleRow | undefined {
-    return this.schedules.get(`${empId}|${date}`);
+    return this.schedules.get(empId)?.get(date);
   }
 
   /** その日の勤務予定。シフトがあればそれ、なければ通常の週の予定（所定労働日・祝日を除く）。休みなら undefined */
@@ -262,17 +280,17 @@ export class Ledger {
    * 指定がなければ、会社の設定の曜日（既定は日曜）。
    */
   isLegalHoliday(emp: Employee, date: string): boolean {
-    if (this.scheduled.has(emp.id)) {
+    if (this.schedules.has(emp.id)) {
       const ws = weekStart(date, 0);
-      const key = `${emp.id}|${ws}`;
-      let designated = this.legalOfWeek.get(key);
+      const weeks = nested(this.legalOfWeek, emp.id);
+      let designated = weeks.get(ws);
       if (designated === undefined) {
         designated = null;
         for (let i = 0; i < 7; i++) {
           const d = addDays(ws, i);
           if (this.scheduleOf(emp.id, d)?.kind === "legal_off") (designated ??= new Set()).add(d);
         }
-        this.legalOfWeek.set(key, designated);
+        weeks.set(ws, designated);
       }
       if (designated !== null) return designated.has(date);
     }

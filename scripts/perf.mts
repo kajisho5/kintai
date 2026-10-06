@@ -90,5 +90,14 @@ await time("/api/schedules", "/api/schedules?ym=2026-10");
   await round("dashboard(打刻10件)", 10);
   await round("dashboard(打刻50件)", 50);
   await round("dashboard(打刻なし・1分経過)", 0);
+  console.log("--- 管理者の操作のあとの再表示 ---");
+  db.prepare("INSERT OR REPLACE INTO schedules (emp_id, date, kind, start, end, break_min) VALUES ('e5', '2026-10-10', 'work', 540, 1080, 60)").run();
+  await time("dashboard(シフト1件を変更)", "/api/dashboard", 1);
+  db.prepare("UPDATE employees SET dept = '別の部署' WHERE id = 'e6'").run();
+  await time("dashboard(社員1人を変更)", "/api/dashboard", 1);
+  db.prepare("INSERT INTO paid_leave (emp_id, date, days) VALUES ('e7', '2026-10-01', 1)").run();
+  await time("dashboard(有給1件を追加)", "/api/dashboard", 1);
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('closing_day', '0')").run();
+  await time("dashboard(会社設定を変更=作り直し)", "/api/dashboard", 1);
 }
 console.log("heapUsed MB", (globalThis.gc?.(), (process.memoryUsage().heapUsed/1048576).toFixed(0)), "rss MB", (process.memoryUsage().rss/1048576).toFixed(0));

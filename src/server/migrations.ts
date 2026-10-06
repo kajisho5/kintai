@@ -216,6 +216,32 @@ export const MIGRATIONS: Migration[] = [
       CREATE TRIGGER rev_paid_leave_d AFTER DELETE ON paid_leave BEGIN UPDATE data_rev SET n = n + 1 WHERE name = 'paid_leave'; END;
     `,
   },
+  {
+    id: 10,
+    name: "data_changes",
+    sql: `
+      -- 社員・シフト・有給の変更は、変更した社員だけを記録する（集計を、その社員の分だけ作り直せるように）。設定・祝日は、data_rev の回数で検知する
+      DROP TRIGGER rev_employees_i;
+      DROP TRIGGER rev_employees_u;
+      DROP TRIGGER rev_employees_d;
+      DROP TRIGGER rev_schedules_i;
+      DROP TRIGGER rev_schedules_u;
+      DROP TRIGGER rev_schedules_d;
+      DROP TRIGGER rev_paid_leave_i;
+      DROP TRIGGER rev_paid_leave_u;
+      DROP TRIGGER rev_paid_leave_d;
+      CREATE TABLE data_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, tbl TEXT NOT NULL, emp_id TEXT NOT NULL);
+      CREATE TRIGGER chg_employees_i AFTER INSERT ON employees BEGIN INSERT INTO data_changes (tbl, emp_id) VALUES ('employees', NEW.id); END;
+      CREATE TRIGGER chg_employees_u AFTER UPDATE OF name, dept, title, kind, role, work_style, geo_exempt, work_days, weekly_days, weekly_hours, base_min, sched_start, hired, carry, email, must_change_password, left_on, active ON employees BEGIN INSERT INTO data_changes (tbl, emp_id) VALUES ('employees', NEW.id); END;
+      CREATE TRIGGER chg_employees_d AFTER DELETE ON employees BEGIN INSERT INTO data_changes (tbl, emp_id) VALUES ('employees', OLD.id); END;
+      CREATE TRIGGER chg_schedules_i AFTER INSERT ON schedules BEGIN INSERT INTO data_changes (tbl, emp_id) VALUES ('schedules', NEW.emp_id); END;
+      CREATE TRIGGER chg_schedules_u AFTER UPDATE ON schedules BEGIN INSERT INTO data_changes (tbl, emp_id) VALUES ('schedules', NEW.emp_id); END;
+      CREATE TRIGGER chg_schedules_d AFTER DELETE ON schedules BEGIN INSERT INTO data_changes (tbl, emp_id) VALUES ('schedules', OLD.emp_id); END;
+      CREATE TRIGGER chg_paid_leave_i AFTER INSERT ON paid_leave BEGIN INSERT INTO data_changes (tbl, emp_id) VALUES ('paid_leave', NEW.emp_id); END;
+      CREATE TRIGGER chg_paid_leave_u AFTER UPDATE ON paid_leave BEGIN INSERT INTO data_changes (tbl, emp_id) VALUES ('paid_leave', NEW.emp_id); END;
+      CREATE TRIGGER chg_paid_leave_d AFTER DELETE ON paid_leave BEGIN INSERT INTO data_changes (tbl, emp_id) VALUES ('paid_leave', OLD.emp_id); END;
+    `,
+  },
 ];
 
 export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): number[] {

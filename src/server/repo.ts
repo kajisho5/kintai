@@ -167,6 +167,12 @@ interface Live {
   rollbacks: number;
   date: string;
   lastSeq: number;
+  /** 保持しておく接続と時計（定期的に最新にするため） */
+  db: Db;
+  clock: Clock;
+  /** 反映済みの data_changes の最後の id と、シフトを読み込んだ範囲の最初の日付 */
+  lastChange: number;
+  schedFrom: string;
   /** 読み込んだ打刻の最初の日付と、打刻のある最初の日付 */
   from: string;
   dataFrom: string | undefined;
@@ -178,10 +184,13 @@ export const snapshotStats = { built: 0, incremental: 0 };
 /** 使い回さずに、毎回ゼロから集計を作る（テストで、差分の反映の結果を照合するために使う） */
 export const snapshotFresh = (db: Db, clock: Clock, opts: SnapshotOptions = {}): Snapshot => buildSnapshot(db, clock, opts).snap;
 /** 残しておく打刻の件数の合計の上限（メモリの目安。超えたら、使っていないものから捨てる） */
+/** 一度に差分で反映する、社員・シフト・有給の変更の記録の上限（これを超えたら作り直す） */
+const MAX_INCREMENTAL_CHANGES = 2000;
 const LIVE_MAX_WEIGHT = 2_000_000;
 
 const revOf = (db: Db): string =>
-  (db.prepare("SELECT name, n FROM data_rev ORDER BY name").all() as unknown as { name: string; n: number }[]).map((r) => `${r.name}:${r.n}`).join(",");
+  (db.prepare("SELECT name, n FROM data_rev WHERE name IN ('settings', 'holidays') ORDER BY name").all() as unknown as { name: string; n: number }[]).map((r) => `${r.name}:${r.n}`).join(",");
+const maxChangeOf = (db: Db): number => (db.prepare("SELECT MAX(id) AS m FROM data_changes").get() as { m: number | null }).m ?? 0;
 const maxSeqOf = (db: Db): number => (db.prepare("SELECT MAX(seq) AS m FROM punch_events").get() as { m: number | null }).m ?? 0;
 const geoSiteCountOf = (db: Db): number => (db.prepare("SELECT COUNT(*) AS n FROM geo_sites").get() as { n: number }).n;
 
@@ -222,23 +231,47 @@ export function snapshot(db: Db, clock: Clock, opts: SnapshotOptions = {}): Snap
   const rev = revOf(db);
   const rollbacks = rollbackCount(db);
   const lastSeq = maxSeqOf(db);
+  const lastChange = maxChangeOf(db);
   const live = liveCache.get(key);
-  if (live && live.rev === rev && live.rollbacks === rollbacks && live.date === now.date && live.lastSeq <= lastSeq) {
+  if (live && live.rev === rev && live.rollbacks === rollbacks && live.date === now.date && live.lastSeq <= lastSeq && live.lastChange <= lastChange) {
     liveCache.delete(key);
     liveCache.set(key, live); // 使った順に並べ替える
     const geoSiteCount = geoSiteCountOf(db); // 打刻場所の表は変更回数に入れていない（件数だけ、毎回読む）
-    if (live.lastSeq === lastSeq && live.snap.nowMin === now.min && live.snap.geoSiteCount === geoSiteCount) return live.snap;
+    if (live.lastSeq === lastSeq && live.lastChange === lastChange && live.snap.nowMin === now.min && live.snap.geoSiteCount === geoSiteCount) return live.snap;
     const added =
       live.lastSeq === lastSeq
         ? []
         : (db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE seq > ? AND seq <= ? ORDER BY seq").all(live.lastSeq, lastSeq) as unknown as PunchEvent[]);
-    // 読み込んだ範囲より前の打刻（過去の日付の修正など）が増えたときは、作り直す
-    if (!added.some((e) => e.date < live.from || live.dataFrom === undefined || e.date < live.dataFrom)) {
-      live.snap.ledger.addEvents(added);
-      live.snap.ledger.advance(now.min);
+    const changes =
+      live.lastChange === lastChange
+        ? []
+        : (db.prepare("SELECT tbl, emp_id AS empId FROM data_changes WHERE id > ? AND id <= ? ORDER BY id").all(live.lastChange, lastChange) as unknown as { tbl: string; empId: string }[]);
+    // 変更の記録が欠けている（古い記録が消された）・多すぎるとき、読み込んだ範囲より前の打刻（過去の日付の修正など）が増えたときは、作り直す
+    const incremental =
+      changes.length === lastChange - live.lastChange &&
+      changes.length <= MAX_INCREMENTAL_CHANGES &&
+      !added.some((e) => e.date < live.from || live.dataFrom === undefined || e.date < live.dataFrom);
+    if (incremental) {
+      const ledger = live.snap.ledger;
+      ledger.addEvents(added);
+      let employees = live.snap.employees;
+      let allEmployees = live.snap.allEmployees;
+      if (changes.length) {
+        const ids = (tbl: string) => [...new Set(changes.filter((c) => c.tbl === tbl).map((c) => c.empId))];
+        const empIds = ids("employees");
+        if (empIds.length) {
+          employees = loadEmployees(db);
+          allEmployees = loadEmployees(db, true);
+          for (const id of empIds) ledger.invalidateEmployee(id);
+        }
+        for (const id of ids("schedules")) ledger.replaceSchedules(id, loadSchedules(db, live.schedFrom, [id]));
+        for (const id of ids("paid_leave")) ledger.replaceLeaves(id, loadLeaves(db, [id]));
+      }
+      ledger.advance(now.min);
       live.lastSeq = lastSeq;
+      live.lastChange = lastChange;
       live.weight += added.length;
-      live.snap = { ...live.snap, nowMin: now.min, today: now.date, geoSiteCount };
+      live.snap = { ...live.snap, employees, allEmployees, nowMin: now.min, today: now.date, geoSiteCount };
       snapshotStats.incremental++;
       return live.snap;
     }
@@ -246,7 +279,7 @@ export function snapshot(db: Db, clock: Clock, opts: SnapshotOptions = {}): Snap
   const built = buildSnapshot(db, clock, opts, lastSeq);
   snapshotStats.built++;
   liveCache.delete(key);
-  liveCache.set(key, { snap: built.snap, rev, rollbacks, date: now.date, lastSeq, from: built.from, dataFrom: built.dataFrom, weight: built.eventCount });
+  liveCache.set(key, { db, clock, snap: built.snap, rev, rollbacks, date: now.date, lastSeq, lastChange, schedFrom: built.schedFrom, from: built.from, dataFrom: built.dataFrom, weight: built.eventCount });
   let total = 0;
   for (const v of liveCache.values()) total += v.weight;
   for (const [k, v] of liveCache) {
@@ -263,7 +296,23 @@ function previousPeriodYm(db: Db, today: string): string {
   return addYm(fiscalStartYm(`${ymOfDate(today, settings.closingDay)}-01`, settings.fyStartMonth), -1);
 }
 
-function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions, maxSeq = Number.MAX_SAFE_INTEGER): { snap: Snapshot; from: string; dataFrom: string | undefined; eventCount: number } {
+/** 有給の取得日（社員を指定すればその社員だけ） */
+function loadLeaves(db: Db, only?: string[]): LeaveRow[] {
+  return (only ? only.flatMap((e) => db.prepare("SELECT emp_id AS empId, date, days FROM paid_leave WHERE emp_id = ?").all(e)) : db.prepare("SELECT emp_id AS empId, date, days FROM paid_leave").all()) as unknown as LeaveRow[];
+}
+
+/** シフト（社員を指定すればその社員だけ。from 以降） */
+function loadSchedules(db: Db, from: string, only?: string[]): ScheduleRow[] {
+  const inClause = only ? ` AND emp_id IN (${only.map(() => "?").join(",")})` : "";
+  return (
+    db.prepare(`SELECT emp_id AS empId, date, kind, start, end, break_min AS breakMin FROM schedules WHERE date >= ?${inClause}`).all(from, ...(only ?? [])) as unknown as (Omit<ScheduleRow, "start" | "end"> & {
+      start: number | null;
+      end: number | null;
+    })[]
+  ).map((r) => ({ ...r, start: r.start ?? undefined, end: r.end ?? undefined }));
+}
+
+function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions, maxSeq = Number.MAX_SAFE_INTEGER): { snap: Snapshot; from: string; dataFrom: string | undefined; eventCount: number; schedFrom: string } {
   const now = clock.now();
   const settings = loadSettings(db);
   const currentYm = ymOfDate(now.date, settings.closingDay);
@@ -285,7 +334,7 @@ function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions, maxSeq = Num
   const events = db
     .prepare(`SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE date >= ? AND seq <= ?${inClause} ORDER BY emp_id, date, seq`)
     .all(from, maxSeq, ...(only ?? [])) as unknown as PunchEvent[];
-  const leaves = (only ? only.flatMap((e) => db.prepare("SELECT emp_id AS empId, date, days FROM paid_leave WHERE emp_id = ?").all(e)) : db.prepare("SELECT emp_id AS empId, date, days FROM paid_leave").all()) as unknown as LeaveRow[];
+  const leaves = loadLeaves(db, only);
   const holidays = Object.fromEntries(
     (db.prepare("SELECT date, name FROM holidays").all() as unknown as { date: string; name: string }[]).map((h) => [h.date, h.name]),
   );
@@ -293,11 +342,7 @@ function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions, maxSeq = Num
   const schedFrom = [from, addDays(now.date, -430)].sort()[0]!;
   const dataFrom = (db.prepare("SELECT MIN(date) AS d FROM punch_events").get() as { d: string | null }).d ?? undefined;
   const worked = db.prepare("SELECT DISTINCT date FROM punch_events WHERE emp_id = ? AND kind = 'in' AND date >= ? AND date < ?");
-  const schedules = (
-    db
-      .prepare(`SELECT emp_id AS empId, date, kind, start, end, break_min AS breakMin FROM schedules WHERE date >= ?${inClause.replace("emp_id", "emp_id")}`)
-      .all(schedFrom, ...(only ?? [])) as unknown as (Omit<ScheduleRow, "start" | "end"> & { start: number | null; end: number | null })[]
-  ).map((r) => ({ ...r, start: r.start ?? undefined, end: r.end ?? undefined }));
+  const schedules = loadSchedules(db, schedFrom, only);
   const ledger = new Ledger({ today: now.date, nowMin: now.min, holidays }, events, leaves, {
     specialClause: settings.specialClause,
     fiscalStartMonth: settings.fyStartMonth,
@@ -314,5 +359,37 @@ function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions, maxSeq = Num
   });
   const fyMonths = monthsBetween(fyStart, currentYm);
   const snap: Snapshot = { ledger, dateOf: clock.dateOf, settings, employees: loadEmployees(db), allEmployees: loadEmployees(db, true), fyMonths, pickerMonths: [prevYm, ...fyMonths], currentYm, geoSiteCount: geoSiteCountOf(db), nowMin: now.min, today: now.date };
-  return { snap, from, dataFrom, eventCount: events.length };
+  return { snap, from, dataFrom, eventCount: events.length, schedFrom };
+}
+
+// ---- 先に作っておく（待たせない） ----
+
+/** 大きな会社の集計を、利用者が開く前に作っておく。メモリの上限に収まらないなら、作らない */
+export function warmSnapshot(db: Db, clock: Clock): void {
+  let total = 0;
+  for (const v of liveCache.values()) total += v.weight;
+  const employees = (db.prepare("SELECT COUNT(*) AS n FROM employees WHERE active = 1").get() as { n: number }).n;
+  if (total + employees * 540 > LIVE_MAX_WEIGHT) return;
+  snapshot(db, clock);
+}
+
+/**
+ * 残してある集計を、最新にする。日付が変わった直後の作り直しや、溜まった差分の反映を、利用者が開く前に済ませる。
+ * 会社ごとに、他のリクエストを処理する間（イベントループ）をあけながら行う。
+ */
+export async function refreshSnapshots(): Promise<void> {
+  for (const [key, live] of [...liveCache]) {
+    try {
+      snapshot(live.db, live.clock);
+    } catch {
+      liveCache.delete(key); // 閉じられた接続など
+    }
+    await new Promise((r) => setImmediate(r));
+  }
+}
+
+/** 接続を閉じるとき、その接続の集計を捨てる */
+export function forgetSnapshots(db: Db): void {
+  const id = dbIds.get(db);
+  if (id !== undefined) liveCache.delete(String(id));
 }

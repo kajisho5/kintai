@@ -65,6 +65,8 @@ export async function runJobs(d: JobDeps, opts: { fullSeatReconcile?: boolean } 
     }
 
     out.cleaned += Number(db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(now).changes);
+    // 集計の差分更新のための変更の記録。新しい2万件だけ残す（欠けていたら、集計は作り直される）
+    out.cleaned += Number(db.prepare("DELETE FROM data_changes WHERE id <= (SELECT MAX(id) FROM data_changes) - 20000").run().changes);
     out.cleaned += Number(db.prepare("DELETE FROM kiosk_tickets WHERE expires_at < ?").run(now).changes);
     out.cleaned += Number(db.prepare("DELETE FROM password_resets WHERE expires_at < ? OR used_at IS NOT NULL").run(now - DAY).changes);
   }

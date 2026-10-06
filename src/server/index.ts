@@ -9,6 +9,7 @@ import { realClock, type Clock } from "./clock";
 import { TenantManager } from "./control";
 import { runJobs } from "./jobs";
 import { mailerFromEnv } from "./mail";
+import { refreshSnapshots, warmSnapshot } from "./repo";
 
 // 製品名に依存しない環境変数名にしている（製品名は src/brand.ts で変更する）
 const dataDir = process.env.DATA_DIR ?? "data";
@@ -84,6 +85,23 @@ const runHourly = () =>
     .catch((e) => console.error("定期ジョブに失敗しました:", e));
 setTimeout(runHourly, 30_000).unref();
 setInterval(runHourly, 3600_000).unref();
+
+// 大きな会社の集計は、作るのに数秒かかる。起動直後と日付が変わった直後に、利用者が開く前に作っておく
+// （DBファイルが大きい会社だけ。会社ごとに、他のリクエストを処理する間をあける）
+const WARM_MIN_DB_BYTES = 10 * 1024 * 1024;
+const warmUp = async () => {
+  for (const t of manager.list()) {
+    if (t.status === "canceled" || t.status === "suspended" || manager.dbFileSize(t.id) < WARM_MIN_DB_BYTES) continue;
+    try {
+      warmSnapshot(manager.db(t.id), clockFor(t.tz));
+    } catch (e) {
+      console.error("集計の事前作成に失敗しました:", e instanceof Error ? e.message : e);
+    }
+    await new Promise((r) => setImmediate(r));
+  }
+};
+setTimeout(() => void warmUp(), 1000).unref();
+setInterval(() => void refreshSnapshots().catch((e) => console.error("集計の更新に失敗しました:", e)), 20_000).unref();
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
