@@ -13,6 +13,7 @@ import type { Mailer } from "./mail";
 import { adminRoutes } from "./routes/admin";
 import { billingRoutes, webhookRoutes } from "./routes/billing";
 import { accountRoutes, publicRoutes, type Deps } from "./routes/auth";
+import { auditRoutes } from "./routes/audit";
 import { kioskAdminRoutes, kioskPublicRoutes } from "./routes/kiosk";
 import { scheduleRoutes } from "./routes/schedule";
 import { workRoutes } from "./routes/work";
@@ -132,6 +133,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
   app.route("/", workRoutes());
   app.route("/", scheduleRoutes());
   app.route("/", kioskAdminRoutes(d));
+  app.route("/", auditRoutes());
   app.route("/", adminRoutes(d));
   app.route("/", billingRoutes(d));
   return app;

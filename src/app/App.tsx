@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { CalendarCheck, CalendarRange, ClipboardCheck, Clock3, KeyRound, CreditCard, LayoutGrid, LogOut, Settings as SettingsIcon, Table2, Users } from "lucide-react";
+import { CalendarCheck, CalendarRange, ClipboardCheck, Clock3, ScrollText, KeyRound, CreditCard, LayoutGrid, LogOut, Settings as SettingsIcon, Table2, Users } from "lucide-react";
 import { BRAND } from "../brand";
 import { SessionProvider, useSession } from "./session";
 import { useHashRoute } from "./ui/hooks";
@@ -7,6 +7,7 @@ import { Avatar } from "./ui/kit";
 import { BrandMark } from "./ui/BrandMark";
 import { PasswordDialog } from "./ui/PasswordDialog";
 import { api } from "./api";
+import { Audit } from "./pages/Audit";
 import { Approvals } from "./pages/Approvals";
 import { Attendance, AttendanceDetail, defaultYm } from "./pages/Attendance";
 import { Billing } from "./pages/Billing";
@@ -102,6 +103,7 @@ function Shell() {
         { to: "leave", label: "有給管理", icon: CalendarCheck },
         { to: "employees", label: "社員管理", icon: Users },
         { to: "settings", label: "会社設定", icon: SettingsIcon },
+        { to: "audit", label: "操作記録", icon: ScrollText },
         { to: "billing", label: "請求", icon: CreditCard },
       ]
     : [
@@ -127,6 +129,7 @@ function Shell() {
     case "employees": page = isAdmin ? <Employees /> : <Dashboard go={go} />; break;
     case "settings": page = isAdmin ? <Settings /> : <Punch />; break;
     case "billing": page = isAdmin ? <Billing /> : <Punch />; break;
+    case "audit": page = isAdmin ? <Audit /> : <Punch />; break;
     default: page = isAdmin ? <Dashboard go={go} /> : <Punch />;
   }
   const activeKey = section === "attendance" && !isAdmin ? `attendance/${myId}` : section;

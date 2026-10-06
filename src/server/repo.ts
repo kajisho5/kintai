@@ -158,8 +158,12 @@ export function snapshot(db: Db, clock: Clock, opts: { backTo?: string } = {}): 
   const holidays = Object.fromEntries(
     (db.prepare("SELECT date, name FROM holidays").all() as unknown as { date: string; name: string }[]).map((h) => [h.date, h.name]),
   );
+  // シフトは、有給の出勤率（直近の1年と少し）の判定にも使うので、集計の範囲より前も読む
+  const schedFrom = [from, addDays(now.date, -430)].sort()[0]!;
+  const dataFrom = (db.prepare("SELECT MIN(date) AS d FROM punch_events").get() as { d: string | null }).d ?? undefined;
+  const worked = db.prepare("SELECT DISTINCT date FROM punch_events WHERE emp_id = ? AND kind = 'in' AND date >= ? AND date < ?");
   const schedules = (
-    db.prepare("SELECT emp_id AS empId, date, kind, start, end, break_min AS breakMin FROM schedules WHERE date >= ?").all(from) as unknown as (Omit<ScheduleRow, "start" | "end"> & { start: number | null; end: number | null })[]
+    db.prepare("SELECT emp_id AS empId, date, kind, start, end, break_min AS breakMin FROM schedules WHERE date >= ?").all(schedFrom) as unknown as (Omit<ScheduleRow, "start" | "end"> & { start: number | null; end: number | null })[]
   ).map((r) => ({ ...r, start: r.start ?? undefined, end: r.end ?? undefined }));
   const ledger = new Ledger({ today: now.date, nowMin: now.min, holidays }, events, leaves.map((l) => ({ ...l })), {
     specialClause: settings.specialClause,
@@ -172,6 +176,8 @@ export function snapshot(db: Db, clock: Clock, opts: { backTo?: string } = {}): 
     yearlyStartMonth: settings.yearlyStartMonth,
     flexCore: settings.flexCoreStart !== null ? { start: settings.flexCoreStart, end: settings.flexCoreEnd! } : undefined,
     schedules,
+    dataFrom,
+    workedDatesOf: (empId, f, t) => new Set((worked.all(empId, f, t) as unknown as { date: string }[]).map((r) => r.date)),
   });
   const fyMonths = monthsBetween(fyStart, currentYm);
   return { ledger, dateOf: clock.dateOf, settings, employees: loadEmployees(db), allEmployees: loadEmployees(db, true), fyMonths, pickerMonths: [prevYm, ...fyMonths], currentYm, geoSiteCount: (db.prepare("SELECT COUNT(*) AS n FROM geo_sites").get() as { n: number }).n, nowMin: now.min, today: now.date };

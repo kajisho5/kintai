@@ -254,3 +254,60 @@ describe("通常の勤務: 週をまたぐ月の区切り・法定内との整�
     expect(m.result.overtimeMin).toBeGreaterThanOrEqual(total - 13285);
   });
 });
+
+describe("有給の付与: 出勤率の判定", () => {
+  const e = { ...base, hired: "2025-04-01" }; // 初回付与 2025-10-01、2回目 2026-10-01（勤続1年6か月 → 11日）
+  const today = "2026-10-06";
+  const scheduled = range("2025-10-01", "2026-09-30").filter((d) => dowOf(d) >= 1 && dowOf(d) <= 5);
+  const mk = (workedShare: number, leaves: string[] = [], dataFrom = "2025-04-01") => {
+    const worked = new Set(scheduled.filter((_, i) => i < Math.round(scheduled.length * workedShare)));
+    return new Ledger({ today, holidays: {} }, [], leaves.map((date) => ({ empId: "x1", date, days: 1 })), {
+      specialClause: true,
+      dataFrom,
+      workedDatesOf: (_id, from, to) => new Set([...worked].filter((d) => d >= from && d < to)),
+    });
+  };
+
+  it("全労働日に出勤していれば出勤率100%で、勤続1年6か月の11日が付与される", () => {
+    const info = mk(1).leaveOf(e);
+    expect(info.attendanceRate).toBe(1);
+    expect(info.rateAssumed).toBe(false);
+    expect(info.granted).toBe(11);
+  });
+
+  it("出勤率が8割未満なら付与されない。ちょうど8割以上なら付与される", () => {
+    const low = mk(0.7).leaveOf(e);
+    expect(low.attendanceRate).toBeCloseTo(0.7, 2);
+    expect(low.granted).toBe(0);
+    const edge = mk(0.8).leaveOf(e);
+    expect(edge.attendanceRate!).toBeGreaterThanOrEqual(0.8);
+    expect(edge.granted).toBe(11);
+  });
+
+  it("有給休暇を取った日は出勤として数える", () => {
+    const absent = scheduled.slice(Math.round(scheduled.length * 0.7)); // 出勤が7割
+    const withLeave = mk(0.7, absent.slice(0, Math.ceil(absent.length * 0.7))).leaveOf(e); // 欠けた日の7割を有給で補う
+    expect(withLeave.attendanceRate!).toBeGreaterThanOrEqual(0.9);
+    expect(withLeave.granted).toBe(11);
+  });
+
+  it("打刻の記録が始まる前の期間を含むときは、実績から判定せず、8割以上と仮定して付与する（導入前の社員が、付与されなくならない）", () => {
+    const info = mk(0, [], "2026-01-01").leaveOf(e);
+    expect(info.attendanceRate).toBeUndefined();
+    expect(info.rateAssumed).toBe(true);
+    expect(info.granted).toBe(11);
+  });
+
+  it("初回の付与（入社から6か月）は、入社日からの期間で判定する", () => {
+    const first = { ...base, hired: "2026-03-01" }; // 初回付与 2026-09-01
+    const days = range("2026-03-01", "2026-08-31").filter((d) => dowOf(d) >= 1 && dowOf(d) <= 5);
+    const l = new Ledger({ today, holidays: {} }, [], [], {
+      specialClause: true,
+      dataFrom: "2026-03-01",
+      workedDatesOf: () => new Set(days.slice(0, Math.floor(days.length * 0.75))),
+    });
+    const info = l.leaveOf(first);
+    expect(info.attendanceRate!).toBeCloseTo(0.75, 1);
+    expect(info.granted).toBe(0);
+  });
+});

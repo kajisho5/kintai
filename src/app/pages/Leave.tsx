@@ -55,7 +55,7 @@ export function Leave() {
               <table className="tbl">
                 <thead>
                   <tr>
-                    <th>社員</th><th>入社日</th><th>直近の付与日</th><th className="r">付与</th><th className="r">繰越</th>
+                    <th>社員</th><th>入社日</th><th>直近の付与日</th><th className="r">付与</th><th>出勤率</th><th className="r">繰越</th>
                     <th className="r">取得</th><th className="r">残</th><th>年5日の取得</th><th>取得期限</th>
                   </tr>
                 </thead>
@@ -70,6 +70,13 @@ export function Leave() {
                         <td>{fmtDate(l.emp.hired)}</td>
                         <td>{l.lastGrant ? fmtDate(l.lastGrant) : <span style={{ color: "var(--ink-3)" }}>付与前（{fmtDate(l.nextGrant)}）</span>}</td>
                         <td className="r">{fmtDays(l.granted)}</td>
+                        <td>
+                          {l.attendanceRate !== undefined ? (
+                            <Pill tone={l.attendanceRate >= 0.8 ? "ok" : "bad"} plain>{(l.attendanceRate * 100).toFixed(1)}%{l.attendanceRate < 0.8 ? "（8割未満）" : ""}</Pill>
+                          ) : l.lastGrant ? (
+                            <span style={{ color: "var(--ink-3)", fontSize: 12 }} title="打刻の記録が無い期間を含むため、実績から判定できません。8割以上として付与しています。">仮定（8割以上）</span>
+                          ) : "–"}
+                        </td>
                         <td className="r">{fmtDays(l.carry)}</td>
                         <td className="r">
                           {fmtDays(l.taken)}
@@ -97,7 +104,7 @@ export function Leave() {
             </div>
           )}
         </section>
-        <p className="note">付与日数は労働基準法39条の付与表（通常・比例付与）に基づき、出勤率8割以上として計算しています。取得は承認済みの有給と登録済みの取得日の合計です。</p>
+        <p className="note">付与日数は労働基準法39条の付与表（通常・比例付与）に基づきます。出勤率は、付与日の直前の期間（初回は入社から6か月、以降は1年）の、所定労働日に対する出勤日（有給の日を含む）の割合で判定し、8割未満は付与しません。打刻の記録が無い期間を含む場合は、実績から判定できないため、8割以上として付与しています。業務上の傷病・産前産後・育児介護休業などで休んだ日は出勤として扱う必要がありますが、自動では扱わないため、該当する社員は確認してください。取得は承認済みの有給と登録済みの取得日の合計です。</p>
       </div>
     </>
   );

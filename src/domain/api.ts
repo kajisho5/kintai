@@ -328,3 +328,26 @@ export interface KioskPunched {
   /** 記録した時刻（0:00 からの分。日またぎの勤務への打刻は 1440 以上） */
   at: number;
 }
+
+// ---------------------------------------------------------------- 操作記録（監査ログ）
+
+export interface AuditRow {
+  id: number;
+  /** 操作した時刻（エポックミリ秒） */
+  at: number;
+  /** 操作者の社員ID（共用端末は「kiosk:端末名」、システムは「-」） */
+  actor: string;
+  actorName?: string;
+  action: string;
+  /** 操作の日本語名（未知の操作は action のまま） */
+  label: string;
+  detail: unknown;
+}
+
+export interface AuditResponse {
+  rows: AuditRow[];
+  /** まだ古い記録がある。次の取得に before として渡す */
+  nextBefore?: number;
+  /** 絞り込みに使える操作の一覧 */
+  actions: { action: string; label: string }[];
+}

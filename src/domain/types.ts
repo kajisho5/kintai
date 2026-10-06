@@ -130,6 +130,10 @@ export interface LedgerOptions {
   /** フレックスタイム制のコアタイム（0:00 からの分）。省略ならコアタイムなし */
   flexCore?: { start: number; end: number };
   schedules?: ScheduleRow[];
+  /** 出勤の打刻がある日の一覧（有給の付与の出勤率の判定用。読み込んでいない過去の期間も照会できる）。from 以上 to 未満 */
+  workedDatesOf?: (empId: string, from: string, to: string) => Set<string>;
+  /** 打刻の記録がある最初の日。これより前の期間を含む出勤率は、判定しない（導入前の実績がないため） */
+  dataFrom?: string;
 }
 
 export interface MonthData {
@@ -197,6 +201,10 @@ export interface LeaveInfo {
   carry: number;
   remaining: number;
   lastGrant?: string;
+  /** 付与の判定に使った出勤率（全労働日に対する出勤日の割合、0〜1）。判定できなかったときは未設定 */
+  attendanceRate?: number;
+  /** 出勤率を実績から判定できず、8割以上（95%）と仮定して付与している（導入前の期間を含むなど） */
+  rateAssumed?: boolean;
   nextGrant: string;
   periodEnd?: string;
   obligationLeft: number;

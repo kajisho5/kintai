@@ -172,6 +172,14 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: 7,
+    name: "audit_index",
+    sql: `
+      CREATE INDEX idx_audit_action ON audit_log (action, id);
+      CREATE INDEX idx_audit_actor ON audit_log (actor, id);
+    `,
+  },
 ];
 
 export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): number[] {

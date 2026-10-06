@@ -271,3 +271,44 @@ describe("協定期間の境目・変形期間が協定期間より前から始�
     expect((await get()).workMin - before.workMin).toBe(600);
   });
 });
+
+describe("有給の出勤率（DBの打刻から判定）", () => {
+  const weekdays = (from: string, to: string) => {
+    const out: string[] = [];
+    for (let d = new Date(`${from}T00:00:00Z`); d <= new Date(`${to}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1)) {
+      if (d.getUTCDay() >= 1 && d.getUTCDay() <= 5) out.push(d.toISOString().slice(0, 10));
+    }
+    return out;
+  };
+  const prepare = (share: number) => {
+    t.db.prepare("UPDATE employees SET hired = '2025-04-01', carry = 0 WHERE id = 'e01'").run();
+    t.db.prepare("DELETE FROM punch_events WHERE emp_id = 'e01'").run();
+    t.db.prepare("DELETE FROM paid_leave WHERE emp_id = 'e01'").run();
+    const ins = t.db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, created_at) VALUES ('e01', ?, 'in', 540, 1)");
+    const days = weekdays("2025-10-01", "2026-09-30");
+    days.slice(0, Math.round(days.length * share)).forEach((d) => ins.run(d));
+    // 記録の最初の日を、集計の期間より前にする（導入前の期間を含まないようにする）
+    t.db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, created_at) VALUES ('e02', '2025-04-01', 'in', 540, 1)").run();
+  };
+  const leave = async () => ((await t.call("GET", "/api/leave", { cookie: admin })).json.rows as { emp: { id: string }; granted: number; attendanceRate?: number; rateAssumed?: boolean }[]).find((r) => r.emp.id === "e01")!;
+
+  it("出勤が全労働日の7割なら付与されず、ほぼ全日出勤なら付与される", async () => {
+    prepare(0.7);
+    const low = await leave();
+    expect(low.rateAssumed).toBe(false);
+    expect(low.attendanceRate!).toBeLessThan(0.8);
+    expect(low.granted).toBe(0);
+    prepare(1);
+    const full = await leave();
+    expect(full.attendanceRate!).toBeGreaterThan(0.95);
+    expect(full.granted).toBe(11);
+  });
+
+  it("打刻の記録が始まる前の期間にかかる社員は、仮定（8割以上）で付与される", async () => {
+    prepare(0);
+    t.db.prepare("DELETE FROM punch_events WHERE emp_id = 'e02' AND date = '2025-04-01'").run(); // 記録の開始は、デモデータの協定期間の初め（2026-04-01）
+    const r = await leave();
+    expect(r.rateAssumed).toBe(true);
+    expect(r.granted).toBe(11);
+  });
+});

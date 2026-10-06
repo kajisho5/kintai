@@ -40,6 +40,8 @@ import type {
 } from "./types";
 
 const SCHED_GRACE_MIN = 15;
+/** 出勤率を実績から判定できないときに仮定する値（8割以上） */
+const ASSUMED_ATTENDANCE_RATE = 0.95;
 /** 出勤から退勤までの上限。これを超えて退勤が無い勤務は、日またぎで続いているのではなく打刻漏れとみなす */
 export const MAX_SHIFT_MIN = 20 * 60;
 /** 日またぎの勤務を退勤したあと、その勤務を「退勤済み」として表示し続ける時間 */
@@ -560,6 +562,20 @@ export class Ledger {
 
   // ------------------------------------------------------------ 有給
 
+  /**
+   * 出勤率 = 期間の全労働日（所定労働日）のうち、出勤した日（有給休暇の日を含む）の割合。
+   * 所定労働日は、シフトまたは通常の週の予定で決める。業務上の傷病・産休・育休などで休んだ日の出勤扱いは、扱わない。
+   * 期間が、打刻の記録のある期間より前にかかる場合や、所定労働日が無い場合は、判定できない（undefined）。
+   */
+  private attendanceRateOf(emp: Employee, from: string, to: string): number | undefined {
+    const { workedDatesOf, dataFrom } = this.opts;
+    if (!workedDatesOf || !dataFrom || from < dataFrom) return undefined;
+    const scheduled = datesBetween(from, addDays(to, -1)).filter((d) => d >= emp.hired && this.isScheduled(emp, d));
+    if (!scheduled.length) return undefined;
+    const worked = workedDatesOf(emp.id, from, to);
+    return scheduled.filter((d) => worked.has(d) || this.leaveDaysOn(emp.id, d) > 0).length / scheduled.length;
+  }
+
   leaveOf(emp: Employee): LeaveInfo {
     const today = this.cal.today;
     const who = { id: emp.id, name: emp.name, dept: emp.dept, weeklyDays: emp.weeklyDays, hired: emp.hired };
@@ -571,7 +587,9 @@ export class Ledger {
     while (addMonths(emp.hired, months + 12) <= today) months += 12;
     const grantAt = addMonths(emp.hired, months);
     const periodEnd = addMonths(grantAt, 12);
-    const granted = grantDays({ monthsOfService: months, weeklyDays: emp.weeklyDays, weeklyHours: emp.weeklyHours, attendanceRate: 0.95 });
+    // 付与の条件の出勤率は、直前の付与日（初回は入社日）からの期間で判定する。実績から判定できなければ、8割以上と仮定する
+    const rate = this.attendanceRateOf(emp, months === 6 ? emp.hired : addMonths(emp.hired, months - 12), grantAt);
+    const granted = grantDays({ monthsOfService: months, weeklyDays: emp.weeklyDays, weeklyHours: emp.weeklyHours, attendanceRate: rate ?? ASSUMED_ATTENDANCE_RATE });
     let taken = 0;
     let planned = 0;
     for (const [date, days] of this.leaves.get(emp.id) ?? []) {
@@ -587,6 +605,8 @@ export class Ledger {
       carry: emp.carry,
       remaining: Math.max(0, emp.carry + granted - taken),
       lastGrant: grantAt,
+      attendanceRate: rate,
+      rateAssumed: rate === undefined,
       nextGrant: periodEnd,
       periodEnd,
       obligationLeft: remainingObligation(granted, taken),
