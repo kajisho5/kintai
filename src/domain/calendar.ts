@@ -1,8 +1,13 @@
+import { dateFromDays, daysFromDate, dowOfDays } from "../engine/dates";
+
 /** 日付はすべて 'YYYY-MM-DD' 文字列。UTC で計算しタイムゾーンの影響を受けない。 */
 
 const utc = (date: string): Date => new Date(`${date}T00:00:00Z`);
 
-export const dowOf = (date: string): number => utc(date).getUTCDay();
+export const dowOf = (date: string): number => {
+  const n = daysFromDate(date);
+  return Number.isNaN(n) ? utc(date).getUTCDay() : dowOfDays(n);
+};
 
 export function datesOfMonth(ym: string): string[] {
   const [y, m] = ym.split("-").map(Number) as [number, number];
@@ -37,12 +42,18 @@ export function addMonths(date: string, n: number): string {
 }
 
 export function addDays(date: string, n: number): string {
+  const days = daysFromDate(date);
+  if (!Number.isNaN(days)) return dateFromDays(days + n);
   const d = utc(date);
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
 
-export const diffDays = (a: string, b: string): number => Math.round((utc(b).getTime() - utc(a).getTime()) / 86400000);
+export const diffDays = (a: string, b: string): number => {
+  const x = daysFromDate(a);
+  const y = daysFromDate(b);
+  return Number.isNaN(x) || Number.isNaN(y) ? Math.round((utc(b).getTime() - utc(a).getTime()) / 86400000) : y - x;
+};
 
 export const isYm = (s: string): boolean => /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
 export const isDate = (s: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(utc(s).getTime()) && utc(s).toISOString().slice(0, 10) === s;
@@ -51,8 +62,15 @@ export const lastDateOfMonth = (ym: string): string => datesOfMonth(ym)[datesOfM
 
 /** from〜to（両端を含む）の日付の一覧 */
 export function datesBetween(from: string, to: string): string[] {
+  const a = daysFromDate(from);
+  const b = daysFromDate(to);
+  if (Number.isNaN(a) || Number.isNaN(b)) {
+    const out: string[] = [];
+    for (let d = from; d <= to; d = addDays(d, 1)) out.push(d);
+    return out;
+  }
   const out: string[] = [];
-  for (let d = from; d <= to; d = addDays(d, 1)) out.push(d);
+  for (let i = a; i <= b; i++) out.push(dateFromDays(i));
   return out;
 }
 

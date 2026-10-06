@@ -107,7 +107,7 @@ export function kioskPublicRoutes({ manager, clockFor, config }: Deps): Hono<Env
 
     const emp = getEmployee(r.db, empId);
     if (!emp) throw new ApiError(401, "この社員は打刻できません");
-    const snap = snapshot(r.db, r.clock);
+    const snap = snapshot(r.db, r.clock, { only: [emp.id] });
     const ev = punchState(snap, emp).events;
     const phase: KioskIdentified["phase"] = ev.in === undefined ? "before" : ev.out !== undefined ? "done" : ev.openBreak !== undefined ? "break" : "working";
     const carriedDone = phase === "done" && punchState(snap, emp).offsetMin > 0; // 日またぎの勤務を退勤済み → 次の勤務の出勤はできる
@@ -136,7 +136,7 @@ export function kioskPublicRoutes({ manager, clockFor, config }: Deps): Hono<Env
     recordPunch(r.db, r.clock, emp, b.action, { source: "kiosk", actor: `kiosk:${r.term.name}`, detail: { terminal: r.term.id } });
     r.db.prepare("DELETE FROM kiosk_tickets WHERE token_hash = ?").run(sha256(b.ticket)); // 1回限り
     touch(r.db, r.term.id, now);
-    const events = punchState(snapshot(r.db, r.clock), emp);
+    const events = punchState(snapshot(r.db, r.clock, { only: [emp.id] }), emp);
     const at = b.action === "in" ? events.events.in : b.action === "out" ? events.events.out : b.action === "break_start" ? events.events.openBreak : events.events.breaks[events.events.breaks.length - 1]?.end;
     return c.json({ emp: { id: emp.id, name: emp.name }, action: b.action, at: at ?? Math.floor(r.clock.now().min) } satisfies KioskPunched);
   });

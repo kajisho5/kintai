@@ -66,7 +66,15 @@ interface Derived {
 /** 打刻イベントから 1 日の出退勤・休憩を導出する。同種は後勝ち（修正申請の承認が上書きできる） */
 export function deriveDay(events: PunchEvent[]): Derived {
   const d: Derived = { breaks: [] };
-  for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
+  // 読み込み済みの打刻は、記録順に並んでいる。並んでいなければ（テストの入力など）、並べ替える
+  let sorted = true;
+  for (let i = 1; i < events.length; i++) {
+    if (events[i - 1]!.seq > events[i]!.seq) {
+      sorted = false;
+      break;
+    }
+  }
+  for (const e of sorted ? events : [...events].sort((a, b) => a.seq - b.seq)) {
     if (e.kind === "in") d.in = e.min;
     else if (e.kind === "out") d.out = e.min;
     else if (e.kind === "break_start") d.openBreak ??= e.min;
@@ -89,7 +97,12 @@ export class Ledger {
   private monthCache = new Map<string, MonthData>();
   private riskCache = new Map<string, Risk>();
   private schedules = new Map<string, ScheduleRow>();
+  /** シフトを1件でも持つ社員（持たない社員は、法定休日の判定を曜日だけで済ませる） */
+  private scheduled = new Set<string>();
+  /** 社員×週（日曜始まり）ごとの、シフトで指定した法定休日（指定がなければ null） */
+  private legalOfWeek = new Map<string, string | null>();
   private periodCache = new Map<string, PeriodComputed>();
+  private planCache = new Map<string, DayPlan>();
 
   constructor(
     readonly cal: Calendar,
@@ -97,12 +110,26 @@ export class Ledger {
     leaves: LeaveRow[],
     private readonly opts: LedgerOptions,
   ) {
-    for (const r of opts.schedules ?? []) this.schedules.set(`${r.empId}|${r.date}`, r);
+    for (const r of opts.schedules ?? []) {
+      this.schedules.set(`${r.empId}|${r.date}`, r);
+      this.scheduled.add(r.empId);
+    }
+    // 同じ社員・日付の行が続いていれば、キーの作成・検索を省く（読み込みは、社員・日付の順に並んでいる）
+    let lastEmp = "";
+    let lastDate = "";
+    let last: PunchEvent[] | undefined;
     for (const e of events) {
+      if (last && e.empId === lastEmp && e.date === lastDate) {
+        last.push(e);
+        continue;
+      }
       const k = `${e.empId}|${e.date}`;
-      const list = this.events.get(k);
-      if (list) list.push(e);
-      else this.events.set(k, [e]);
+      let list = this.events.get(k);
+      if (!list) this.events.set(k, (list = []));
+      list.push(e);
+      last = list;
+      lastEmp = e.empId;
+      lastDate = e.date;
     }
     for (const l of leaves) {
       let m = this.leaves.get(l.empId);
@@ -177,9 +204,22 @@ export class Ledger {
    * 指定がなければ、会社の設定の曜日（既定は日曜）。
    */
   isLegalHoliday(emp: Employee, date: string): boolean {
-    const ws = weekStart(date, 0);
-    for (let i = 0; i < 7; i++) {
-      if (this.scheduleOf(emp.id, addDays(ws, i))?.kind === "legal_off") return this.scheduleOf(emp.id, date)?.kind === "legal_off";
+    if (this.scheduled.has(emp.id)) {
+      const ws = weekStart(date, 0);
+      const key = `${emp.id}|${ws}`;
+      let designated = this.legalOfWeek.get(key);
+      if (designated === undefined) {
+        designated = null;
+        for (let i = 0; i < 7; i++) {
+          const d = addDays(ws, i);
+          if (this.scheduleOf(emp.id, d)?.kind === "legal_off") {
+            designated = d;
+            break;
+          }
+        }
+        this.legalOfWeek.set(key, designated);
+      }
+      if (designated !== null) return designated === date;
     }
     return dowOf(date) === this.legalDow;
   }
@@ -197,7 +237,15 @@ export class Ledger {
 
   // ------------------------------------------------------------ 日
 
+  /** 1日分の予定・実績。この Ledger のデータは変わらないので、結果を使い回す */
   planOf(emp: Employee, date: string): DayPlan {
+    const key = `${emp.id}|${date}`;
+    let p = this.planCache.get(key);
+    if (!p) this.planCache.set(key, (p = this.computePlan(emp, date)));
+    return p;
+  }
+
+  private computePlan(emp: Employee, date: string): DayPlan {
     if (emp.leftOn && date > emp.leftOn) return { date, kind: "off", breaks: [], note: "退職後" };
     const hol = this.cal.holidays[date];
     const leave = this.leaveDaysOn(emp.id, date);

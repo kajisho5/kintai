@@ -1,3 +1,4 @@
+import { dateFromDays, daysFromDate, dowOfDays } from "./dates";
 import type { DayInput, DayResult, Interval, MonthResult, Minutes } from "./types";
 
 export const DAY_MIN = 1440;
@@ -85,6 +86,8 @@ export function calcDay(input: DayInput): DayResult {
 
 /** 'YYYY-MM-DD' → 週の開始日（既定: 月曜）の 'YYYY-MM-DD'。UTC で計算しタイムゾーン影響を排除 */
 export function weekStart(date: string, weekStartsOn: 0 | 1 = 1): string {
+  const n = daysFromDate(date);
+  if (!Number.isNaN(n)) return dateFromDays(n - ((dowOfDays(n) - weekStartsOn + 7) % 7));
   const d = new Date(`${date}T00:00:00Z`);
   const diff = (d.getUTCDay() - weekStartsOn + 7) % 7;
   d.setUTCDate(d.getUTCDate() - diff);

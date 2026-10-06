@@ -251,3 +251,35 @@ describe("roundMonthTotal", () => {
     expect(roundMonthTotal(89, "none")).toBe(89);
   });
 });
+
+describe("日付の整数計算", () => {
+  it("Date を使った計算と、1900〜2200年の全日で一致する（通算日・曜日・往復）", async () => {
+    const { daysFromDate, dateFromDays, dowOfDays } = await import("./dates");
+    const start = Date.UTC(1900, 0, 1) / 86400000;
+    const end = Date.UTC(2200, 11, 31) / 86400000;
+    let bad = 0;
+    for (let n = start; n <= end; n++) {
+      const d = new Date(n * 86400000);
+      const s = d.toISOString().slice(0, 10);
+      if (daysFromDate(s) !== n || dateFromDays(n) !== s || dowOfDays(n) !== d.getUTCDay()) bad++;
+    }
+    expect(bad).toBe(0);
+  });
+
+  it("不正な形式は NaN。weekStart・addDays は、月・年をまたいでも正しい", async () => {
+    const { daysFromDate } = await import("./dates");
+    const { addDays, diffDays, dowOf, datesBetween } = await import("../domain/calendar");
+    expect(daysFromDate("2026-13-01")).toBeNaN();
+    expect(daysFromDate("26-10-01")).toBeNaN();
+    expect(daysFromDate("abc")).toBeNaN();
+    expect(addDays("2026-12-31", 1)).toBe("2027-01-01");
+    expect(addDays("2024-02-28", 1)).toBe("2024-02-29");
+    expect(addDays("2026-03-01", -1)).toBe("2026-02-28");
+    expect(diffDays("2026-10-01", "2026-11-01")).toBe(31);
+    expect(dowOf("2026-10-06")).toBe(2);
+    expect(weekStart("2026-10-04")).toBe("2026-09-28"); // 日曜 → 前の月曜
+    expect(weekStart("2026-10-04", 0)).toBe("2026-10-04");
+    expect(datesBetween("2026-02-27", "2026-03-02")).toEqual(["2026-02-27", "2026-02-28", "2026-03-01", "2026-03-02"]);
+    expect(datesBetween("2026-10-05", "2026-10-04")).toEqual([]);
+  });
+});

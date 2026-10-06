@@ -98,7 +98,8 @@ export function workRoutes(): Hono<Env> {
 
 app.get("/api/punch/today", (c) => {
   const { db, clock } = ctx(c);
-  return c.json(punchState(snapshot(db, clock), c.get("me")));
+  const me = c.get("me");
+  return c.json(punchState(snapshot(db, clock, { only: [me.id] }), me));
 });
 
 const geoSchema = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), accuracy: z.number().min(0).max(100000).optional() });
@@ -108,7 +109,7 @@ app.post("/api/punch", async (c) => {
   const me = c.get("me");
   const { action, geo } = parse(z.object({ action: z.enum(["in", "out", "break_start", "break_end"]), geo: geoSchema.optional() }), await c.req.json().catch(() => null));
   recordPunch(db, clock, me, action, { geo });
-  return c.json(punchState(snapshot(db, clock), me));
+  return c.json(punchState(snapshot(db, clock, { only: [me.id] }), me));
 });
 
 // ---- ダッシュボード ----
@@ -147,7 +148,7 @@ const ymParam = (c: Context<Env>, snap: Snapshot): string => {
 };
 
 /** 勤怠の画面・CSV用。前の協定期間の最終月が指定されたときは、36協定のチェックに必要な前の期間ぶんも読み込む */
-const attendanceSnapshot = (c: Context<Env>): Snapshot => snapshot(c.get("db"), c.get("clock"), { backTo: c.req.query("ym") });
+const attendanceSnapshot = (c: Context<Env>, only?: string[]): Snapshot => snapshot(c.get("db"), c.get("clock"), { backTo: c.req.query("ym"), only });
 
 app.get("/api/attendance", (c) => {
   requireAdmin(c);
@@ -232,7 +233,7 @@ app.get("/api/attendance/:id", (c) => {
   const me = c.get("me");
   const id = c.req.param("id");
   if (me.role !== "admin" && me.id !== id) throw new ApiError(403, "他の社員の勤怠は表示できません");
-  const snap = attendanceSnapshot(c);
+  const snap = attendanceSnapshot(c, [id]);
   const emp = snap.allEmployees.find((e) => e.id === id);
   if (!emp) throw new ApiError(404, "社員が見つかりません");
   const ym = ymParam(c, snap);
@@ -259,7 +260,7 @@ app.get("/api/attendance/:id", (c) => {
 app.get("/api/leave", (c) => {
   const { db, clock } = ctx(c);
   const me = c.get("me");
-  const snap = snapshot(db, clock);
+  const snap = snapshot(db, clock, me.role === "admin" ? {} : { only: [me.id] });
   const targets = me.role === "admin" ? snap.employees : snap.employees.filter((e) => e.id === me.id);
   const body: LeaveResponse = { today: snap.today, rows: targets.map((e) => snap.ledger.leaveOf(e)) };
   return c.json(body);
@@ -308,7 +309,7 @@ app.get("/api/requests", (c) => {
   const me = c.get("me");
   const status = c.req.query("status");
   if (status && !["pending", "approved", "rejected", "cancelled"].includes(status)) throw new ApiError(400, "状態の指定が正しくありません");
-  return c.json(listRequests(db, snapshot(db, clock), { status, empId: me.role === "admin" ? undefined : me.id }));
+  return c.json(listRequests(db, snapshot(db, clock, me.role === "admin" ? {} : { only: [me.id] }), { status, empId: me.role === "admin" ? undefined : me.id }));
 });
 
 function validateNewRequest(db: Db, snap: Snapshot, me: Employee, req: NewReq): unknown {
@@ -355,7 +356,7 @@ app.post("/api/requests", async (c) => {
   const me = c.get("me");
   const req = parse(newRequestSchema, await c.req.json().catch(() => null));
   const now = clock.now();
-  const snap = snapshot(db, clock);
+  const snap = snapshot(db, clock, { only: [me.id] });
   const payload = validateNewRequest(db, snap, me, req);
   const r = db
     .prepare("INSERT INTO requests (emp_id, kind, date, payload, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)")
@@ -390,7 +391,7 @@ app.post("/api/requests/:id/decision", async (c) => {
     if (selfApproved && (db.prepare("SELECT COUNT(*) AS n FROM employees WHERE active = 1 AND role = 'admin'").get() as { n: number }).n > 1) {
       throw new ApiError(403, "自分の申請は承認・却下できません（他の管理者が処理します）");
     }
-    if (decision === "approved") applyApproval(db, snapshot(db, clock), r, now.ts);
+    if (decision === "approved") applyApproval(db, snapshot(db, clock, { only: [r.emp_id] }), r, now.ts);
     db.prepare("UPDATE requests SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?").run(decision, admin.id, now.ts, id);
     audit(db, now.ts, admin.id, `request_${decision}`, { id, kind: r.kind, emp: r.emp_id, date: r.date, selfApproved });
   });

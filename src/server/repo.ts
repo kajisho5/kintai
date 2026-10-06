@@ -133,12 +133,43 @@ export interface Snapshot {
   today: string;
 }
 
+export interface SnapshotOptions {
+  /** 前の協定期間の最終月を見るとき、その月（36協定のチェックに必要な、前の期間ぶんも読み込む） */
+  backTo?: string;
+  /** 指定した社員の打刻・シフト・有給だけを読み込む（1人分の画面で、全社員ぶんを読み込まないため） */
+  only?: string[];
+}
+
+// 同じ状態（同じDB・同じ変更回数・同じ分）に対する集計は、短時間なら使い回す。
+// DBへの書き込みがあれば、変更回数が変わるので、使い回さない。
+const dbIds = new WeakMap<Db, number>();
+let nextDbId = 1;
+const snapshotCache = new Map<string, { at: number; snap: Snapshot }>();
+const SNAPSHOT_CACHE_MAX = 12;
+const SNAPSHOT_CACHE_TTL_MS = 120_000;
+
 /**
  * 現在の協定期間ぶんの打刻を読み込み、集計用の Ledger を作る。
  * 直前の月（前の協定期間の最終月）も選べるよう、その月の初めから読む。backTo にその月を指定すると、
  * その月の36協定のチェックに必要な、前の協定期間ぶんも読み込む（指定しなければ、直前の月の36協定の判定は不完全になる）。
  */
-export function snapshot(db: Db, clock: Clock, opts: { backTo?: string } = {}): Snapshot {
+export function snapshot(db: Db, clock: Clock, opts: SnapshotOptions = {}): Snapshot {
+  const now = clock.now();
+  let id = dbIds.get(db);
+  if (!id) dbIds.set(db, (id = nextDbId++));
+  const changes = (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+  const key = `${id}|${changes}|${now.date}|${Math.floor(now.min)}|${opts.backTo ?? ""}|${opts.only ? [...opts.only].sort().join(",") : "*"}`;
+  const t = Date.now();
+  const hit = snapshotCache.get(key);
+  if (hit && t - hit.at < SNAPSHOT_CACHE_TTL_MS) return hit.snap;
+  const snap = buildSnapshot(db, clock, opts);
+  snapshotCache.set(key, { at: t, snap });
+  for (const [k, v] of snapshotCache) if (t - v.at >= SNAPSHOT_CACHE_TTL_MS) snapshotCache.delete(k);
+  while (snapshotCache.size > SNAPSHOT_CACHE_MAX) snapshotCache.delete(snapshotCache.keys().next().value!);
+  return snap;
+}
+
+function buildSnapshot(db: Db, clock: Clock, opts: SnapshotOptions): Snapshot {
   const now = clock.now();
   const settings = loadSettings(db);
   const currentYm = ymOfDate(now.date, settings.closingDay);
@@ -154,10 +185,13 @@ export function snapshot(db: Db, clock: Clock, opts: { backTo?: string } = {}): 
     flexPeriodOfYm(loadStartYm, settings.flexStartMonth, settings.flexMonths, settings.closingDay).start,
   ].sort()[0]!;
   const from = addDays(weekStart(earliest, 1), -1);
-  const events = (
-    db.prepare("SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE date >= ? ORDER BY seq").all(from) as unknown as PunchEvent[]
-  ).map((e) => ({ ...e }));
-  const leaves = db.prepare("SELECT emp_id AS empId, date, days FROM paid_leave").all() as unknown as LeaveRow[];
+  const only = opts.only;
+  const inClause = only ? ` AND emp_id IN (${only.map(() => "?").join(",")})` : "";
+  // 社員・日付・記録順に並べて読む（Ledger が、同じ社員・日付の連続した行を、まとめて扱える）
+  const events = db
+    .prepare(`SELECT emp_id AS empId, date, kind, min, seq FROM punch_events WHERE date >= ?${inClause} ORDER BY emp_id, date, seq`)
+    .all(from, ...(only ?? [])) as unknown as PunchEvent[];
+  const leaves = (only ? only.flatMap((e) => db.prepare("SELECT emp_id AS empId, date, days FROM paid_leave WHERE emp_id = ?").all(e)) : db.prepare("SELECT emp_id AS empId, date, days FROM paid_leave").all()) as unknown as LeaveRow[];
   const holidays = Object.fromEntries(
     (db.prepare("SELECT date, name FROM holidays").all() as unknown as { date: string; name: string }[]).map((h) => [h.date, h.name]),
   );
@@ -166,9 +200,11 @@ export function snapshot(db: Db, clock: Clock, opts: { backTo?: string } = {}): 
   const dataFrom = (db.prepare("SELECT MIN(date) AS d FROM punch_events").get() as { d: string | null }).d ?? undefined;
   const worked = db.prepare("SELECT DISTINCT date FROM punch_events WHERE emp_id = ? AND kind = 'in' AND date >= ? AND date < ?");
   const schedules = (
-    db.prepare("SELECT emp_id AS empId, date, kind, start, end, break_min AS breakMin FROM schedules WHERE date >= ?").all(schedFrom) as unknown as (Omit<ScheduleRow, "start" | "end"> & { start: number | null; end: number | null })[]
+    db
+      .prepare(`SELECT emp_id AS empId, date, kind, start, end, break_min AS breakMin FROM schedules WHERE date >= ?${inClause.replace("emp_id", "emp_id")}`)
+      .all(schedFrom, ...(only ?? [])) as unknown as (Omit<ScheduleRow, "start" | "end"> & { start: number | null; end: number | null })[]
   ).map((r) => ({ ...r, start: r.start ?? undefined, end: r.end ?? undefined }));
-  const ledger = new Ledger({ today: now.date, nowMin: now.min, holidays }, events, leaves.map((l) => ({ ...l })), {
+  const ledger = new Ledger({ today: now.date, nowMin: now.min, holidays }, events, leaves, {
     specialClause: settings.specialClause,
     fiscalStartMonth: settings.fyStartMonth,
     legalHolidayDow: settings.legalHolidayDow,
