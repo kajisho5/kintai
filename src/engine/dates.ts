@@ -5,8 +5,21 @@
 
 const FORMAT = /^\d{4}-\d{2}-\d{2}$/;
 
+// 同じ日付が何度も計算される（社員×日数の集計）ため、結果を覚えておく。日付の種類は限られるので、上限を超えたら捨てる
+const memo = new Map<string, number>();
+const MEMO_MAX = 20_000;
+
 /** 'YYYY-MM-DD' → 1970-01-01 からの通算日。形式が不正なら NaN */
 export function daysFromDate(date: string): number {
+  const hit = memo.get(date);
+  if (hit !== undefined) return hit;
+  const v = parseDate(date);
+  if (memo.size >= MEMO_MAX) memo.clear();
+  memo.set(date, v);
+  return v;
+}
+
+function parseDate(date: string): number {
   if (!FORMAT.test(date)) return NaN;
   let y = Number(date.slice(0, 4));
   const m = Number(date.slice(5, 7));

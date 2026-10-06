@@ -91,8 +91,11 @@ function plannedBreakLen(baseMin: number): number {
   return baseMin >= 480 ? 60 : baseMin > 360 ? 45 : 0;
 }
 
+const NO_EVENTS = Object.freeze([]) as unknown as PunchEvent[];
+
 export class Ledger {
-  private events = new Map<string, PunchEvent[]>();
+  /** 社員 → 日付 → 打刻（記録順） */
+  private events = new Map<string, Map<string, PunchEvent[]>>();
   private leaves = new Map<string, Map<string, number>>();
   private monthCache = new Map<string, MonthData>();
   private riskCache = new Map<string, Risk>();
@@ -102,7 +105,7 @@ export class Ledger {
   /** 社員×週（日曜始まり）ごとの、シフトで指定した法定休日（指定がなければ null） */
   private legalOfWeek = new Map<string, string | null>();
   private periodCache = new Map<string, PeriodComputed>();
-  private planCache = new Map<string, DayPlan>();
+  private planCache = new Map<string, Map<string, DayPlan>>();
 
   constructor(
     readonly cal: Calendar,
@@ -114,18 +117,22 @@ export class Ledger {
       this.schedules.set(`${r.empId}|${r.date}`, r);
       this.scheduled.add(r.empId);
     }
-    // 同じ社員・日付の行が続いていれば、キーの作成・検索を省く（読み込みは、社員・日付の順に並んでいる）
+    // 同じ社員・日付の行が続いていれば、検索を省く（読み込みは、社員・日付の順に並んでいる）
     let lastEmp = "";
     let lastDate = "";
     let last: PunchEvent[] | undefined;
+    let byDate: Map<string, PunchEvent[]> | undefined;
     for (const e of events) {
       if (last && e.empId === lastEmp && e.date === lastDate) {
         last.push(e);
         continue;
       }
-      const k = `${e.empId}|${e.date}`;
-      let list = this.events.get(k);
-      if (!list) this.events.set(k, (list = []));
+      if (!byDate || e.empId !== lastEmp) {
+        byDate = this.events.get(e.empId);
+        if (!byDate) this.events.set(e.empId, (byDate = new Map()));
+      }
+      let list = byDate.get(e.date);
+      if (!list) byDate.set(e.date, (list = []));
       list.push(e);
       last = list;
       lastEmp = e.empId;
@@ -152,7 +159,7 @@ export class Ledger {
   }
 
   eventsOf(empId: string, date: string): PunchEvent[] {
-    return this.events.get(`${empId}|${date}`) ?? [];
+    return this.events.get(empId)?.get(date) ?? NO_EVENTS;
   }
 
   leaveDaysOn(empId: string, date: string): number {
@@ -239,9 +246,10 @@ export class Ledger {
 
   /** 1日分の予定・実績。この Ledger のデータは変わらないので、結果を使い回す */
   planOf(emp: Employee, date: string): DayPlan {
-    const key = `${emp.id}|${date}`;
-    let p = this.planCache.get(key);
-    if (!p) this.planCache.set(key, (p = this.computePlan(emp, date)));
+    let byDate = this.planCache.get(emp.id);
+    if (!byDate) this.planCache.set(emp.id, (byDate = new Map()));
+    let p = byDate.get(date);
+    if (!p) byDate.set(date, (p = this.computePlan(emp, date)));
     return p;
   }
 
