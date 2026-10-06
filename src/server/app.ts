@@ -7,7 +7,10 @@ import { ApiError, COOKIE, type AppConfig, type Env } from "./context";
 import type { TenantManager } from "./control";
 import { accessOf } from "./plans";
 import { getEmployee } from "./repo";
+import type { BillingGateway } from "./billing";
+import type { Mailer } from "./mail";
 import { adminRoutes } from "./routes/admin";
+import { billingRoutes, webhookRoutes } from "./routes/billing";
 import { accountRoutes, publicRoutes, type Deps } from "./routes/auth";
 import { workRoutes } from "./routes/work";
 
@@ -19,10 +22,14 @@ export interface AppDeps {
   /** 会社のタイムゾーンに応じた時計を返す（テストでは固定時計を返す） */
   clockFor: (tz: string) => Clock;
   config: AppConfig;
+  mailer: Mailer;
+  billing: BillingGateway;
+  /** メール内のリンク・決済後の戻り先に使う公開URL。未設定ならメール送信は行わない */
+  appUrl?: string;
 }
 
 /** 変更を伴うが、契約が無効・期限切れでも許す操作（ログアウト・パスワード変更・課金） */
-const ALWAYS_ALLOWED = [/^\/api\/auth\//, /^\/api\/billing\//];
+const ALWAYS_ALLOWED = [/^\/api\/auth\//, /^\/api\/billing\//]; // 解約・停止中でも、課金ページの操作（再申し込み）は許す
 /** パスワード変更前でも許す操作 */
 const BEFORE_PASSWORD_CHANGE = new Set(["/api/me", "/api/auth/password", "/api/auth/logout"]);
 
@@ -67,8 +74,9 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return c.json({ ok: true });
   });
 
-  const d: Deps = { manager, clockFor: deps.clockFor, config };
+  const d: Deps = { manager, clockFor: deps.clockFor, config, mailer: deps.mailer, billing: deps.billing, appUrl: deps.appUrl };
   app.route("/", publicRoutes(d));
+  app.route("/", webhookRoutes(d));
 
   // ---- 以降は要ログイン。Cookie（企業ID.トークン）から会社・社員を解決する ----
   app.use("/api/*", async (c, next) => {
@@ -108,5 +116,6 @@ export function createApp(deps: AppDeps): Hono<Env> {
   app.route("/", accountRoutes(d));
   app.route("/", workRoutes());
   app.route("/", adminRoutes(d));
+  app.route("/", billingRoutes(d));
   return app;
 }

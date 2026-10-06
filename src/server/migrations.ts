@@ -102,9 +102,21 @@ export const MIGRATIONS: Migration[] = [
   },
   // 退職日。退職後も、在籍していた月の勤怠は一覧に残す
   { id: 3, name: "employee_left_on", sql: "ALTER TABLE employees ADD COLUMN left_on TEXT;" },
+  {
+    id: 4,
+    name: "password_resets",
+    sql: `
+      CREATE TABLE password_resets (
+        token_hash TEXT PRIMARY KEY,
+        emp_id TEXT NOT NULL REFERENCES employees(id),
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER
+      );
+    `,
+  },
 ];
 
-export function migrate(db: DatabaseSync, migrations: Migration[] = MIGRATIONS): number[] {
+export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): number[] {
   db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)");
   const done = new Set((db.prepare("SELECT id FROM schema_migrations").all() as { id: number }[]).map((r) => r.id));
   const applied: number[] = [];

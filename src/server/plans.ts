@@ -28,7 +28,7 @@ export interface Access {
 
 const DAY = 86400_000;
 
-export function accessOf(t: Pick<Tenant, "status" | "trialEndsAt">, nowMs: number): Access {
+export function accessOf(t: Pick<Tenant, "status" | "trialEndsAt" | "pastDueSince">, nowMs: number): Access {
   switch (t.status) {
     case "trialing": {
       if (nowMs > t.trialEndsAt) return { state: "trial_expired", writable: false, seatLimit: PLAN.trialSeatLimit };
@@ -36,8 +36,11 @@ export function accessOf(t: Pick<Tenant, "status" | "trialEndsAt">, nowMs: numbe
     }
     case "active":
       return { state: "active", writable: true, seatLimit: PLAN.paidSeatLimit };
-    case "past_due":
-      return { state: "past_due", writable: true, seatLimit: PLAN.paidSeatLimit };
+    case "past_due": {
+      // 支払いの確認が取れないまま猶予期間を過ぎたら、閲覧のみにする
+      const graceOver = t.pastDueSince !== undefined && nowMs > t.pastDueSince + PLAN.pastDueGraceDays * DAY;
+      return { state: "past_due", writable: !graceOver, seatLimit: PLAN.paidSeatLimit };
+    }
     case "canceled":
       return { state: "canceled", writable: false, seatLimit: PLAN.paidSeatLimit };
     case "suspended":

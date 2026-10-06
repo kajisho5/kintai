@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import type { MeResponse } from "../domain/api";
 import { api } from "./api";
 import { Login } from "./pages/Login";
+import { Forgot, Reset } from "./pages/Recover";
 import { Signup } from "./pages/Signup";
 
 interface Base {
@@ -67,7 +68,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [load]);
 
   if (state.status === "loading") return <div className="splash" role="status" aria-label="読み込み中" />;
-  if (state.status === "anon") return window.location.hash === "#/signup" ? <Signup onDone={load} /> : <Login onLogin={load} />;
+  if (state.status === "anon") {
+    const h = window.location.hash;
+    if (h.startsWith("#/signup")) return <Signup onDone={load} />;
+    if (h.startsWith("#/forgot")) return <Forgot />;
+    if (h.startsWith("#/reset")) return <Reset />;
+    return <Login onLogin={load} />;
+  }
 
   const session: Session = {
     me: state.base.me,

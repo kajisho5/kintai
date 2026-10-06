@@ -182,3 +182,20 @@ export interface SettingsResponse {
   holidays: HolidayRow[];
   holidaysStale: boolean;
 }
+
+// ---------------------------------------------------------------- 請求
+
+export interface BillingInfo {
+  /** 課金機能が設定済みか（未設定の環境では申し込みできない） */
+  configured: boolean;
+  state: AccessState;
+  trialDaysLeft?: number;
+  trialEndsAt: number;
+  seatsUsed: number;
+  pricePerSeatJpy: number;
+  /** 現在の人数での月額（税抜） */
+  monthlyEstimateJpy: number;
+  hasSubscription: boolean;
+  /** 支払い遅延の猶予が終わる日時（遅延中のみ） */
+  graceEndsAt?: number;
+}

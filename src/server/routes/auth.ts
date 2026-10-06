@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
@@ -10,6 +11,9 @@ import { audit, tx } from "../db";
 import { RateLimiter } from "../ratelimit";
 import { loadSettings } from "../repo";
 import type { Clock } from "../clock";
+import type { BillingGateway } from "../billing";
+import { templates, type Mailer } from "../mail";
+import { PLAN } from "../plans";
 
 export const TERMS_VERSION = "draft-1";
 
@@ -17,7 +21,14 @@ export interface Deps {
   manager: TenantManager;
   clockFor: (tz: string) => Clock;
   config: AppConfig;
+  mailer: Mailer;
+  billing: BillingGateway;
+  /** メール内のリンクに使う公開URL（例: https://app.example.com）。Host ヘッダは信用しない */
+  appUrl?: string;
 }
+
+const RESET_MINUTES = 60;
+const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
 export function clientIp(c: Context, trustProxy?: boolean): string {
   if (trustProxy) {
@@ -42,12 +53,15 @@ const signupSchema = z.object({
 });
 
 /** ログイン前に使える API（ログイン・ログアウト・会社登録） */
-export function publicRoutes({ manager, clockFor, config }: Deps): Hono<Env> {
+export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps): Hono<Env> {
   const app = new Hono<Env>();
   const accountThrottle = new LoginThrottle();
   const ipFails = new RateLimiter(20, 10 * 60_000);
   const signupLimit = new RateLimiter(10, 60 * 60_000);
   const checkLimit = new RateLimiter(60, 10 * 60_000);
+  const forgotIp = new RateLimiter(10, 10 * 60_000);
+  const forgotKey = new RateLimiter(3, 60 * 60_000);
+  const resetIp = new RateLimiter(20, 10 * 60_000);
 
   app.post("/api/auth/login", async (c) => {
     const body = parse(
@@ -136,7 +150,63 @@ export function publicRoutes({ manager, clockFor, config }: Deps): Hono<Env> {
       manager.delete(tenant.id); // 作りかけの会社を残さない
       throw e;
     }
+    if (appUrl) {
+      const mail = templates.welcome({ adminName: b.adminName, companyName: b.companyName, code: tenant.code, loginUrl: appUrl, trialDays: PLAN.trialDays });
+      void mailer.send({ to: b.email, ...mail }).catch((e) => console.error("ご登録メールを送れませんでした:", e instanceof Error ? e.message : e));
+    }
     return c.json({ ok: true, code: tenant.code }, 201);
+  });
+
+  // ---- パスワードの再設定（メールアドレスを登録している人向け） ----
+
+  app.post("/api/auth/forgot", async (c) => {
+    const b = parse(z.object({ company: z.string().trim().toLowerCase().min(1).max(40), email: z.string().trim().toLowerCase().email().max(120) }), await c.req.json().catch(() => null));
+    const now = clockFor("Asia/Tokyo").now().ts;
+    const ip = clientIp(c, config.trustProxy);
+    if (forgotIp.blocked(ip, now) || forgotKey.blocked(`${b.company}/${b.email}`, now)) throw new ApiError(429, "しばらく待ってからもう一度お試しください");
+    forgotIp.record(ip, now);
+    forgotKey.record(`${b.company}/${b.email}`, now);
+
+    const tenant = manager.findByCode(b.company);
+    if (tenant && tenant.status !== "suspended" && appUrl) {
+      const db = manager.db(tenant.id);
+      const emps = db.prepare("SELECT id FROM employees WHERE active = 1 AND lower(email) = ?").all(b.email) as { id: string }[];
+      for (const e of emps) {
+        const token = randomBytes(32).toString("base64url");
+        db.prepare("INSERT INTO password_resets (token_hash, emp_id, expires_at) VALUES (?, ?, ?)").run(sha256(token), e.id, now + RESET_MINUTES * 60_000);
+        const link = `${appUrl}/#/reset?company=${encodeURIComponent(tenant.code)}&token=${token}`;
+        void mailer.send({ to: b.email, ...templates.passwordReset({ link, minutes: RESET_MINUTES }) }).catch((err) => console.error("再設定メールを送れませんでした:", err instanceof Error ? err.message : err));
+        audit(db, now, e.id, "password_reset_requested", { ip });
+      }
+    }
+    // 登録の有無が分からないよう、結果にかかわらず同じ応答を返す
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/auth/reset", async (c) => {
+    const b = parse(
+      z.object({ company: z.string().trim().toLowerCase().min(1).max(40), token: z.string().min(20).max(100), password: z.string().min(8, "新しいパスワードは8文字以上にしてください").max(200) }),
+      await c.req.json().catch(() => null),
+    );
+    const now = clockFor("Asia/Tokyo").now().ts;
+    const ip = clientIp(c, config.trustProxy);
+    if (resetIp.blocked(ip, now)) throw new ApiError(429, "しばらく待ってからもう一度お試しください");
+    resetIp.record(ip, now);
+    const invalid = () => new ApiError(400, "このリンクは無効か、有効期限が切れています。もう一度、再設定をお申し込みください");
+    const tenant = manager.findByCode(b.company);
+    if (!tenant || tenant.status === "suspended") throw invalid();
+    const db = manager.db(tenant.id);
+    tx(db, () => {
+      const row = db.prepare("SELECT emp_id AS id, expires_at AS exp FROM password_resets WHERE token_hash = ? AND used_at IS NULL").get(sha256(b.token)) as { id: string; exp: number } | undefined;
+      if (!row || row.exp < now) throw invalid();
+      const emp = db.prepare("SELECT id FROM employees WHERE id = ? AND active = 1").get(row.id);
+      if (!emp) throw invalid();
+      db.prepare("UPDATE employees SET password_hash = ?, must_change_password = 0 WHERE id = ?").run(hashPassword(b.password), row.id);
+      db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(row.id);
+      db.prepare("UPDATE password_resets SET used_at = ? WHERE emp_id = ?").run(now, row.id); // この人の未使用トークンはすべて無効にする
+      audit(db, now, row.id, "password_reset", { ip });
+    });
+    return c.json({ ok: true });
   });
 
   return app;

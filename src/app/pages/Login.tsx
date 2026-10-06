@@ -60,6 +60,7 @@ export function Login({ onLogin }: { onLogin: () => void }) {
         <button className="btn primary" type="submit" disabled={busy || !company || !id || !password}>
           {busy ? "確認しています…" : "ログイン"}
         </button>
+        <p className="note" style={{ margin: 0 }}><a href="#/forgot">パスワードをお忘れの方</a></p>
         <p className="note" style={{ margin: 0 }}>はじめての方は <a href="#/signup">無料で始める</a></p>
         {import.meta.env.DEV ? (
           <p className="note" style={{ margin: 0 }}>開発環境: 企業ID demo / 管理者 e16 / 一般社員 e01〜e18。パスワードは <code>npm run db:seed</code> 時の SEED_PASSWORD（既定 demo-pass-1234）</p>

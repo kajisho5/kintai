@@ -8,6 +8,7 @@ import { activeCount, ApiError, parse, requireAdmin, type Env } from "../context
 import { audit, tx, type Db } from "../db";
 import { parseCsv } from "../csv";
 import { loadSettings } from "../repo";
+import { syncSeats } from "../seats";
 import type { Deps } from "./auth";
 
 // 紛らわしい文字（0/O, 1/l/I）を除いた一時パスワード用の文字集合
@@ -210,7 +211,7 @@ export function parseEmployeeCsv(text: string, existingIds: Set<string>): { rows
 
 // ---------------------------------------------------------------- ルート
 
-export function adminRoutes({ manager }: Deps): Hono<Env> {
+export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
   const app = new Hono<Env>();
 
   const list = (db: Db): EmployeesResponse["rows"] =>
@@ -221,6 +222,11 @@ export function adminRoutes({ manager }: Deps): Hono<Env> {
     if (activeCount(c.get("db")) + adding > limit) {
       throw new ApiError(409, `ご契約の人数（${limit}名）を超えるため追加できません`, "SEAT_LIMIT");
     }
+  };
+
+  /** 人数が変わったら、契約中なら課金の数量に反映する（失敗しても操作は止めない） */
+  const seatsChanged = (c: Context<Env>): void => {
+    void syncSeats(manager, billing, c.get("tenant").id, c.get("db"));
   };
 
   const target = (c: Context<Env>): EmpRow => {
@@ -246,6 +252,7 @@ export function adminRoutes({ manager }: Deps): Hono<Env> {
     const pw = e.password ?? tempPassword();
     insertEmployee(db, e, pw, true);
     audit(db, c.get("clock").now().ts, admin.id, "employee_create", { id: e.id, role: e.role });
+    seatsChanged(c);
     return c.json({ id: e.id, tempPassword: pw }, 201);
   });
 
@@ -316,6 +323,7 @@ export function adminRoutes({ manager }: Deps): Hono<Env> {
       db.prepare("UPDATE requests SET status = 'cancelled' WHERE emp_id = ? AND status = 'pending'").run(cur.id);
     });
     audit(db, c.get("clock").now().ts, admin.id, "employee_deactivate", { id: cur.id });
+    seatsChanged(c);
     return c.json({ ok: true });
   });
 
@@ -327,6 +335,7 @@ export function adminRoutes({ manager }: Deps): Hono<Env> {
     seatCheck(c, 1);
     db.prepare("UPDATE employees SET active = 1, left_on = NULL WHERE id = ?").run(cur.id);
     audit(db, c.get("clock").now().ts, admin.id, "employee_reactivate", { id: cur.id });
+    seatsChanged(c);
     return c.json({ ok: true });
   });
 
@@ -346,6 +355,7 @@ export function adminRoutes({ manager }: Deps): Hono<Env> {
     const credentials = rows.map(({ data }) => ({ id: data.id, name: data.name, tempPassword: tempPassword() }));
     tx(db, () => rows.forEach(({ data }, i) => insertEmployee(db, data, credentials[i]!.tempPassword, true)));
     audit(db, c.get("clock").now().ts, admin.id, "employee_import", { count: rows.length });
+    seatsChanged(c);
     return c.json({ ok: true, dryRun: false, count: rows.length, credentials } satisfies ImportResponse);
   });
 

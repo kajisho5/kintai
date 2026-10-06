@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CalendarCheck, ClipboardCheck, Clock3, KeyRound, LayoutGrid, LogOut, Settings as SettingsIcon, Table2, Users } from "lucide-react";
+import { CalendarCheck, ClipboardCheck, Clock3, KeyRound, CreditCard, LayoutGrid, LogOut, Settings as SettingsIcon, Table2, Users } from "lucide-react";
 import { BRAND } from "../brand";
 import { SessionProvider, useSession } from "./session";
 import { useHashRoute } from "./ui/hooks";
@@ -8,6 +8,7 @@ import { BrandMark } from "./ui/BrandMark";
 import { PasswordDialog } from "./ui/PasswordDialog";
 import { Approvals } from "./pages/Approvals";
 import { Attendance, AttendanceDetail, defaultYm } from "./pages/Attendance";
+import { Billing } from "./pages/Billing";
 import { Dashboard } from "./pages/Dashboard";
 import { Employees } from "./pages/Employees";
 import { Leave } from "./pages/Leave";
@@ -31,6 +32,7 @@ function TenantBanner() {
   return (
     <div className={`banner ${m.tone}`} role="status">
       <span>{m.text}{!isAdmin && t.state !== "trialing" ? " 管理者にご連絡ください。" : ""}</span>
+      {isAdmin ? <a className="link" href="#/billing" style={{ marginLeft: "auto" }}>{t.state === "past_due" ? "お支払いを確認する" : "お申し込み・請求"}</a> : null}
     </div>
   );
 }
@@ -51,6 +53,7 @@ function Shell() {
         { to: "leave", label: "有給管理", icon: CalendarCheck },
         { to: "employees", label: "社員管理", icon: Users },
         { to: "settings", label: "会社設定", icon: SettingsIcon },
+        { to: "billing", label: "請求", icon: CreditCard },
       ]
     : [
         { to: "punch", label: "打刻", icon: Clock3 },
@@ -59,7 +62,7 @@ function Shell() {
         { to: "leave", label: "有給", icon: CalendarCheck },
       ];
 
-  const [section = "", param] = (route || (isAdmin ? "dashboard" : "punch")).split("/");
+  const [section = "", param] = (route || (isAdmin ? "dashboard" : "punch")).split("?")[0]!.split("/"); // ?以降は画面ごとの付加情報
 
   let page;
   switch (section) {
@@ -72,6 +75,7 @@ function Shell() {
     case "leave": page = <Leave />; break;
     case "employees": page = isAdmin ? <Employees /> : <Dashboard go={go} />; break;
     case "settings": page = isAdmin ? <Settings /> : <Punch />; break;
+    case "billing": page = isAdmin ? <Billing /> : <Punch />; break;
     default: page = isAdmin ? <Dashboard go={go} /> : <Punch />;
   }
   const activeKey = section === "attendance" && !isAdmin ? `attendance/${myId}` : section;
