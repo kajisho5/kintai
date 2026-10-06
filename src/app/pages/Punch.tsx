@@ -1,60 +1,66 @@
 import { useState } from "react";
 import { Coffee, LogIn, LogOut, Play } from "lucide-react";
-import { CURRENT_YM, ME, TODAY, leaveOf, meToday, monthOf, outlookOf, riskOf } from "../data";
-import { clock, dur, durOrDash, jpDate } from "../format";
-import { actions, useStore } from "../store";
-import { useNow } from "../ui/hooks";
+import { api, useApi } from "../api";
+import type { PunchStateResponse } from "../../domain/api";
+import { clock as fmtClock, dur, durOrDash, jpDate } from "../format";
+import { useClock, useSession } from "../session";
 import { Gauge, Pill, RiskPill } from "../ui/kit";
 
-type Act = "in" | "bstart" | "bend" | "out";
+type Act = "in" | "out" | "break_start" | "break_end";
+const LABEL: Record<Act, string> = { in: "出勤", out: "退勤", break_start: "休憩開始", break_end: "休憩終了" };
 
 export function Punch() {
-  const { date, min } = useNow();
-  const { punch } = useStore();
+  const { me, refresh } = useSession();
+  const now = useClock();
+  const { data, error, reload } = useApi<PunchStateResponse>("/api/punch/today");
+  const [state, setState] = useState<PunchStateResponse | undefined>();
   const [toast, setToast] = useState("");
-  const ev = punch.events;
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const onBreak = ev.breaks.some((b) => b.end === undefined);
+  const s = state ?? data;
+  if (!s) return <p className={error ? "status-error" : ""} role="status">{error ?? "読み込んでいます…"}</p>;
+  const ev = s.events;
+
+  const onBreak = ev.openBreak !== undefined;
   const phase = ev.in === undefined ? "before" : ev.out !== undefined ? "done" : onBreak ? "break" : "working";
   const enabled: Record<Act, boolean> = {
     in: phase === "before",
-    bstart: phase === "working",
-    bend: phase === "break",
+    break_start: phase === "working",
+    break_end: phase === "break",
     out: phase === "working" || phase === "break",
   };
 
-  const hh = String(date.getHours()).padStart(2, "0");
-  const mm = String(date.getMinutes()).padStart(2, "0");
-  const ss = String(date.getSeconds()).padStart(2, "0");
-
-  const stamp = (a: Act) => {
-    const m = Math.floor(min);
-    const t = clock(m);
-    if (a === "in") actions.clockIn(m);
-    if (a === "bstart") actions.breakStart(m);
-    if (a === "bend") actions.breakEnd(m);
-    if (a === "out") actions.clockOut(m);
-    const label = { in: "出勤", bstart: "休憩開始", bend: "休憩終了", out: "退勤" }[a];
-    setToast(`${label}を記録しました（${t}）`);
+  const stamp = async (a: Act) => {
+    setBusy(true);
+    setErr("");
+    try {
+      // 時刻はサーバーが記録する（端末の時計は使わない）
+      const next = await api<PunchStateResponse>("/api/punch", { method: "POST", body: { action: a } });
+      setState(next);
+      const t = a === "in" ? next.events.in : a === "out" ? next.events.out : a === "break_start" ? next.events.openBreak : next.events.breaks[next.events.breaks.length - 1]?.end;
+      setToast(`${LABEL[a]}を記録しました${t !== undefined ? `（${fmtClock(t)}）` : ""}`);
+      refresh();
+    } catch (e) {
+      setToast("");
+      setErr(e instanceof Error ? e.message : "打刻に失敗しました");
+      reload();
+      setState(undefined);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const last = (a: Act): string => {
-    if (a === "in") return ev.in !== undefined ? `記録済み ${clock(ev.in)}` : "勤務を開始";
-    if (a === "out") return ev.out !== undefined ? `記録済み ${clock(ev.out)}` : "勤務を終了";
-    if (a === "bstart") {
-      const b = ev.breaks[ev.breaks.length - 1];
-      return b ? `直近 ${clock(b.start)}` : "休憩に入る";
+    if (a === "in") return ev.in !== undefined ? `記録済み ${fmtClock(ev.in)}` : "勤務を開始";
+    if (a === "out") return ev.out !== undefined ? `記録済み ${fmtClock(ev.out)}` : "勤務を終了";
+    if (a === "break_start") {
+      const open = ev.openBreak ?? ev.breaks[ev.breaks.length - 1]?.start;
+      return open !== undefined ? `直近 ${fmtClock(open)}` : "休憩に入る";
     }
-    const b = [...ev.breaks].reverse().find((x) => x.end !== undefined);
-    return b ? `直近 ${clock(b.end!)}` : "休憩から戻る";
+    const b = ev.breaks[ev.breaks.length - 1];
+    return b ? `直近 ${fmtClock(b.end)}` : "休憩から戻る";
   };
-
-  const today = meToday(punch, min);
-  const month = monthOf(ME, CURRENT_YM).result;
-  const outlook = outlookOf(ME, CURRENT_YM);
-  const mtdOt = month.overtimeMin + today.dailyOvertimeMin;
-  const risk = riskOf(ME);
-  const leave = leaveOf(ME);
 
   const statusPill =
     phase === "before" ? <Pill>出勤前</Pill> : phase === "working" ? <Pill tone="live">勤務中</Pill> : phase === "break" ? <Pill tone="warn">休憩中</Pill> : <Pill tone="ai">退勤済</Pill>;
@@ -63,19 +69,21 @@ export function Punch() {
   if (ev.in !== undefined) timeline.push({ t: ev.in, label: "出勤", kind: "in" });
   ev.breaks.forEach((b) => {
     timeline.push({ t: b.start, label: "休憩開始", kind: "brk" });
-    if (b.end !== undefined) timeline.push({ t: b.end, label: "休憩終了", kind: "brk" });
+    timeline.push({ t: b.end, label: "休憩終了", kind: "brk" });
   });
+  if (ev.openBreak !== undefined) timeline.push({ t: ev.openBreak, label: "休憩開始", kind: "brk" });
   if (ev.out !== undefined) timeline.push({ t: ev.out, label: "退勤", kind: "out" });
   timeline.sort((a, b) => a.t - b.t);
 
-  const elapsed = ev.in === undefined ? "" : `出勤から ${dur((ev.out ?? min) - ev.in)} 経過`;
+  const elapsed = ev.in === undefined ? "" : `出勤から ${dur((ev.out ?? now.min) - ev.in)} 経過`;
+  const monthOt = s.monthOvertimeMin;
 
   return (
     <>
       <header className="page-head">
         <div>
           <h1>打刻</h1>
-          <p>{ME.name}さん（{ME.dept}）</p>
+          <p>{me.employee.name}さん（{me.employee.dept}）</p>
         </div>
       </header>
 
@@ -83,51 +91,45 @@ export function Punch() {
         <section className="panel" aria-label="打刻">
           <div className="clockface">
             <span className="status">{statusPill}</span>
-            <div className="big num" aria-label={`現在時刻 ${hh}時${mm}分`}>
-              {hh}:{mm}
-              <span className="sec" aria-hidden="true">{ss}</span>
+            <div className="big num" aria-label={`現在時刻 ${now.hh}時${now.mm}分`}>
+              {now.hh}:{now.mm}
+              <span className="sec" aria-hidden="true">{now.ss}</span>
             </div>
-            <div className="date">{jpDate(TODAY)}</div>
+            <div className="date">{jpDate(now.today)}</div>
             <div className="elapsed">{elapsed}</div>
           </div>
           <div className="punch-actions">
-            <button type="button" className="pbtn main-act" disabled={!enabled.in} onClick={() => stamp("in")}>
+            <button type="button" className="pbtn main-act" disabled={!enabled.in || busy} onClick={() => stamp("in")}>
               <span className="ic"><LogIn size={20} /></span>
               <span><b>出勤</b><small>{last("in")}</small></span>
             </button>
-            <button type="button" className="pbtn main-act" disabled={!enabled.out} onClick={() => stamp("out")}>
+            <button type="button" className="pbtn main-act" disabled={!enabled.out || busy} onClick={() => stamp("out")}>
               <span className="ic"><LogOut size={20} /></span>
               <span><b>退勤</b><small>{last("out")}</small></span>
             </button>
-            <button type="button" className="pbtn" disabled={!enabled.bstart} onClick={() => stamp("bstart")}>
+            <button type="button" className="pbtn" disabled={!enabled.break_start || busy} onClick={() => stamp("break_start")}>
               <span className="ic"><Coffee size={20} /></span>
-              <span><b>休憩開始</b><small>{last("bstart")}</small></span>
+              <span><b>休憩開始</b><small>{last("break_start")}</small></span>
             </button>
-            <button type="button" className="pbtn" disabled={!enabled.bend} onClick={() => stamp("bend")}>
+            <button type="button" className="pbtn" disabled={!enabled.break_end || busy} onClick={() => stamp("break_end")}>
               <span className="ic"><Play size={20} /></span>
-              <span><b>休憩終了</b><small>{last("bend")}</small></span>
+              <span><b>休憩終了</b><small>{last("break_end")}</small></span>
             </button>
           </div>
           <div className="toast" role="status" aria-live="polite">{toast}</div>
+          {err ? <div className="form-error" role="alert" style={{ textAlign: "center", paddingBottom: 16 }}>{err}</div> : null}
         </section>
 
         <div className="stack">
           <section className="panel" aria-labelledby="rec">
-            <div className="panel-head">
-              <h2 id="rec">本日の記録</h2>
-              {ev.in !== undefined ? (
-                <button type="button" className="btn sm text" onClick={() => { actions.resetToday(); setToast(""); }}>
-                  記録をリセット
-                </button>
-              ) : null}
-            </div>
+            <div className="panel-head"><h2 id="rec">本日の記録</h2></div>
             {timeline.length === 0 ? (
               <div className="empty"><b>まだ打刻がありません</b>「出勤」を押すと記録が始まります。</div>
             ) : (
               <ol className="timeline">
                 {timeline.map((t, i) => (
                   <li key={i} className={t.kind}>
-                    <span className="num">{clock(t.t)}</span>
+                    <span className="num">{fmtClock(t.t)}</span>
                     <span>{t.label}</span>
                   </li>
                 ))}
@@ -139,26 +141,27 @@ export function Punch() {
             <div className="panel-head"><h2 id="sum">本日の集計</h2></div>
             <div className="panel-body">
               <dl className="kv">
-                <div><dt>実働</dt><dd>{durOrDash(today.workMin)}</dd></div>
-                <div><dt>法定内</dt><dd>{durOrDash(today.legalInMin)}</dd></div>
-                <div><dt>時間外</dt><dd>{durOrDash(today.dailyOvertimeMin)}</dd></div>
-                <div><dt>深夜（22:00〜5:00）</dt><dd>{durOrDash(today.nightMin)}</dd></div>
+                <div><dt>実働</dt><dd>{durOrDash(s.day.workMin)}</dd></div>
+                <div><dt>法定内</dt><dd>{durOrDash(s.day.legalInMin)}</dd></div>
+                <div><dt>時間外</dt><dd>{durOrDash(s.day.dailyOvertimeMin)}</dd></div>
+                <div><dt>深夜（22:00〜5:00）</dt><dd>{durOrDash(s.day.nightMin)}</dd></div>
               </dl>
+              <p className="note">打刻した時点までの集計です。</p>
             </div>
           </section>
 
           <section className="panel" aria-labelledby="mon">
             <div className="panel-head">
               <h2 id="mon">今月の時間外</h2>
-              <RiskPill level={risk.level} />
+              <RiskPill level={s.riskLevel} />
             </div>
             <div className="panel-body">
               <div className="gauge-cell">
-                <Gauge mtd={mtdOt} proj={Math.max(outlook.projOvertime, mtdOt)} scaleHours={60} tickHours={45} level={risk.level} />
-                <span className="num">{dur(mtdOt)}</span>
+                <Gauge mtd={monthOt} proj={Math.max(s.outlook.projOvertime, monthOt)} scaleHours={60} tickHours={45} level={s.riskLevel} />
+                <span className="num">{dur(monthOt)}</span>
               </div>
               <div className="gauge-scale"><span>0</span><span>45時間</span><span>60時間</span></div>
-              <p className="note">月末見込は {dur(outlook.projOvertime)} です。有給の残りは {leave.remaining} 日です。</p>
+              <p className="note">月末見込は {dur(s.outlook.projOvertime)} です。有給の残りは {s.leaveRemaining} 日です。</p>
             </div>
           </section>
         </div>

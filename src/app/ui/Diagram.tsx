@@ -1,6 +1,16 @@
 import { useMemo } from "react";
-import { DEPTS, STATUS_LABEL, type TodayRow } from "../data";
+import type { Status, TodayRow } from "../../domain/types";
 import { clock } from "../format";
+
+const STATUS_LABEL: Record<Status, string> = {
+  working: "勤務中",
+  break: "休憩中",
+  left: "退勤済",
+  before: "出勤前",
+  missing: "打刻なし",
+  leave: "休暇",
+  off: "休み",
+};
 
 const AX0 = 7 * 60;
 const AX1 = 23 * 60;
@@ -41,10 +51,10 @@ function Track({ row, now }: { row: TodayRow; now: number }) {
 }
 
 export function Diagram({ rows, now, dept }: { rows: TodayRow[]; now: number; dept: string }) {
-  const groups = useMemo(
-    () => DEPTS.filter((d) => dept === "all" || d === dept).map((d) => ({ dept: d, rows: rows.filter((r) => r.emp.dept === d) })),
-    [rows, dept],
-  );
+  const groups = useMemo(() => {
+    const depts = [...new Set(rows.map((r) => r.emp.dept))];
+    return depts.filter((d) => dept === "all" || d === dept).map((d) => ({ dept: d, rows: rows.filter((r) => r.emp.dept === d) }));
+  }, [rows, dept]);
   const nowVisible = now >= AX0 && now <= AX1;
 
   return (

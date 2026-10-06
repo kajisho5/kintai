@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import type { RiskLevel } from "../data";
+import type { RiskLevel } from "../../domain/types";
 
 export function Pill({ tone = "", children, plain }: { tone?: "ok" | "warn" | "bad" | "ai" | "live" | ""; children: ReactNode; plain?: boolean }) {
   return <span className={`pill ${tone} ${plain ? "plain" : ""}`}>{children}</span>;
