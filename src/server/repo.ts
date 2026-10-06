@@ -1,7 +1,7 @@
 import { Ledger, addDays, addYm, type Rounding, fiscalStartYm, flexPeriodOfYm, monthsBetween, periodOfYm, yearlyPeriodOfYm, ymOfDate, type Employee, type LeaveRow, type PunchEvent, type ScheduleRow, type WorkStyle } from "../domain";
 import { weekStart } from "../engine";
 import type { Clock } from "./clock";
-import type { Db } from "./db";
+import { rollbackCount, type Db } from "./db";
 
 interface EmpRow {
   id: string;
@@ -158,7 +158,7 @@ export function snapshot(db: Db, clock: Clock, opts: SnapshotOptions = {}): Snap
   let id = dbIds.get(db);
   if (!id) dbIds.set(db, (id = nextDbId++));
   const changes = (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
-  const key = `${id}|${changes}|${now.date}|${Math.floor(now.min)}|${opts.backTo ?? ""}|${opts.only ? [...opts.only].sort().join(",") : "*"}`;
+  const key = `${id}|${changes}|${rollbackCount(db)}|${now.date}|${Math.floor(now.min)}|${opts.backTo ?? ""}|${opts.only ? [...opts.only].sort().join(",") : "*"}`;
   const t = Date.now();
   const hit = snapshotCache.get(key);
   if (hit && t - hit.at < SNAPSHOT_CACHE_TTL_MS) return hit.snap;

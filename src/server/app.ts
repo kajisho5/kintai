@@ -13,6 +13,7 @@ import type { Mailer } from "./mail";
 import { adminRoutes } from "./routes/admin";
 import { billingRoutes, webhookRoutes } from "./routes/billing";
 import { accountRoutes, publicRoutes, type Deps } from "./routes/auth";
+import { MailTargetGuard } from "./ratelimit";
 import { hasTotp, twoFactorRoutes } from "./routes/twofactor";
 import { auditRoutes } from "./routes/audit";
 import { kioskAdminRoutes, kioskPublicRoutes } from "./routes/kiosk";
@@ -92,7 +93,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return c.json({ ok: true });
   });
 
-  const d: Deps = { manager, clockFor: deps.clockFor, config, mailer: deps.mailer, billing: deps.billing, appUrl: deps.appUrl };
+  const d: Deps = { manager, clockFor: deps.clockFor, config, mailer: deps.mailer, billing: deps.billing, appUrl: deps.appUrl, mailTargets: new MailTargetGuard() };
   app.route("/", publicRoutes(d));
   app.route("/", webhookRoutes(d));
   app.route("/", kioskPublicRoutes(d));

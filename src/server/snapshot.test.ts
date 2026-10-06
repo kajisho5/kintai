@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { tx } from "./db";
 import { snapshot } from "./repo";
 import { setup, TODAY } from "./testkit";
 
@@ -80,5 +81,20 @@ describe("snapshot の使い回し", () => {
       expect(one.ledger.monthOf(emp(one, id), "2026-10").result, id).toEqual(all.ledger.monthOf(emp(all, id), "2026-10").result);
       expect(one.ledger.leaveOf(emp(one, id)), id).toEqual(all.ledger.leaveOf(emp(all, id)));
     }
+  });
+
+  it("書き込みを取り消した（ロールバックした）あとは、取り消した打刻を含む集計を返さない", () => {
+    const { t, db } = prep();
+    db.prepare("DELETE FROM punch_events WHERE emp_id = 'e07' AND date = ?").run(TODAY);
+    expect(() =>
+      tx(db, () => {
+        const ins = db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, created_at) VALUES ('e07', ?, ?, ?, 1)");
+        ins.run(TODAY, "in", 8 * 60);
+        ins.run(TODAY, "out", 9 * 60);
+        expect(workMin(snapshot(db, t.clock, { only: ["e07"] }), "e07")).toBe(60);
+        throw new Error("取り消し");
+      }),
+    ).toThrow("取り消し");
+    expect(workMin(snapshot(db, t.clock, { only: ["e07"] }), "e07")).toBe(0);
   });
 });

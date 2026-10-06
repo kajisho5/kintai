@@ -11,6 +11,10 @@ export function openDb(file: string): Db {
   return db;
 }
 
+/** ロールバックの回数（DBごと）。total_changes() はロールバックしても戻らないので、書き込みの取り消しを、集計の使い回しの判定に使う */
+const rollbacks = new WeakMap<Db, number>();
+export const rollbackCount = (db: Db): number => rollbacks.get(db) ?? 0;
+
 export function tx<T>(db: Db, fn: () => T): T {
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -18,6 +22,7 @@ export function tx<T>(db: Db, fn: () => T): T {
     db.exec("COMMIT");
     return r;
   } catch (e) {
+    rollbacks.set(db, rollbackCount(db) + 1);
     db.exec("ROLLBACK");
     throw e;
   }

@@ -103,7 +103,7 @@ export class Ledger {
   /** シフトを1件でも持つ社員（持たない社員は、法定休日の判定を曜日だけで済ませる） */
   private scheduled = new Set<string>();
   /** 社員×週（日曜始まり）ごとの、シフトで指定した法定休日（指定がなければ null） */
-  private legalOfWeek = new Map<string, string | null>();
+  private legalOfWeek = new Map<string, Set<string> | null>();
   private periodCache = new Map<string, PeriodComputed>();
   private planCache = new Map<string, Map<string, DayPlan>>();
 
@@ -219,14 +219,11 @@ export class Ledger {
         designated = null;
         for (let i = 0; i < 7; i++) {
           const d = addDays(ws, i);
-          if (this.scheduleOf(emp.id, d)?.kind === "legal_off") {
-            designated = d;
-            break;
-          }
+          if (this.scheduleOf(emp.id, d)?.kind === "legal_off") (designated ??= new Set()).add(d);
         }
         this.legalOfWeek.set(key, designated);
       }
-      if (designated !== null) return designated === date;
+      if (designated !== null) return designated.has(date);
     }
     return dowOf(date) === this.legalDow;
   }

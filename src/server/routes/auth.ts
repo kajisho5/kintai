@@ -8,7 +8,7 @@ import { burnPasswordCheck, checkCredentials, createSession, destroySession, has
 import { activeCount, ApiError, brief, COOKIE, parse, pendingCount, requireAdmin, type AppConfig, type Env } from "../context";
 import { validateCode, type TenantManager } from "../control";
 import { audit, tx } from "../db";
-import { RateLimiter } from "../ratelimit";
+import { MailTargetGuard, RateLimiter } from "../ratelimit";
 import { loadSettings } from "../repo";
 import type { Clock } from "../clock";
 import type { BillingGateway } from "../billing";
@@ -26,6 +26,8 @@ export interface Deps {
   billing: BillingGateway;
   /** メール内のリンクに使う公開URL（例: https://app.example.com）。Host ヘッダは信用しない */
   appUrl?: string;
+  /** 確認メールの宛先の制限（登録と、送り先の変更で共有する） */
+  mailTargets: MailTargetGuard;
 }
 
 const RESET_MINUTES = 60;
@@ -67,7 +69,7 @@ const signupSchema = z.object({
 });
 
 /** ログイン前に使える API（ログイン・ログアウト・会社登録） */
-export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps): Hono<Env> {
+export function publicRoutes({ manager, clockFor, config, mailer, appUrl, mailTargets }: Deps): Hono<Env> {
   const app = new Hono<Env>();
   // 同じアカウントを同じIPから5回失敗 → 5分ロック。さらに、IPを替えても同じアカウントへの失敗が多すぎれば15分ロック。
   // （アカウント単位だけだと、他人が失敗を重ねて管理者を締め出せてしまう）
@@ -75,9 +77,6 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
   const accountThrottle = new LoginThrottle(20, 15 * 60_000);
   const ipFails = new RateLimiter(20, 10 * 60_000);
   const signupLimit = new RateLimiter(10, 60 * 60_000);
-  // 他人のアドレスに登録メールを送りつける迷惑行為への対策。IPを変えても、同じアドレス宛・サービス全体での数を抑える
-  const signupMailTo = new RateLimiter(3, 24 * 3600_000);
-  const signupAll = new RateLimiter(300, 60 * 60_000);
   const checkLimit = new RateLimiter(60, 10 * 60_000);
   const totpThrottle = new LoginThrottle(5, 5 * 60_000); // 二段階目のコードを5回間違えると、5分ロック
   const forgotIp = new RateLimiter(10, 10 * 60_000);
@@ -174,11 +173,9 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
     if (codeErr) throw new ApiError(400, codeErr);
     if (manager.findByCode(b.code)) throw new ApiError(409, "この企業IDはすでに使われています");
     if (appUrl) {
-      const mailKey = b.email.trim().toLowerCase();
-      if (signupAll.blocked("all", now)) throw new ApiError(429, "ただいま登録が混み合っています。しばらくしてからお試しください");
-      if (signupMailTo.blocked(mailKey, now)) throw new ApiError(429, "このメールアドレスでの登録の試行が多すぎます。24時間ほどあけてお試しください");
-      signupAll.record("all", now);
-      signupMailTo.record(mailKey, now);
+      // 他人のアドレスに確認メールを送りつける迷惑行為への対策。IPを変えても、同じアドレス宛・サービス全体での数を抑える
+      const limited = mailTargets.reserve(b.email, now);
+      if (limited) throw new ApiError(429, limited);
     }
 
     const pwHash = await hashPassword(b.password); // 重い計算は、会社を作る前・トランザクションの外で行う
@@ -300,7 +297,7 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl }: Deps
 }
 
 /** ログイン後に使える認証まわりの API（自分の情報・パスワード変更） */
-export function accountRoutes({ config, manager, mailer, appUrl }: Deps): Hono<Env> {
+export function accountRoutes({ config, manager, mailer, appUrl, mailTargets }: Deps): Hono<Env> {
   const app = new Hono<Env>();
   const throttle = new LoginThrottle();
   const resendLimit = new RateLimiter(5, 60 * 60_000);
@@ -353,6 +350,8 @@ export function accountRoutes({ config, manager, mailer, appUrl }: Deps): Hono<E
     if (resendLimit.blocked(tenant.id, now)) throw new ApiError(429, "確認メールの送信が多すぎます。しばらくしてからお試しください");
     resendLimit.record(tenant.id, now);
     if (body.email && body.email !== tenant.adminEmail) {
+      const limited = mailTargets.reserve(body.email, now);
+      if (limited) throw new ApiError(429, limited);
       manager.changeAdminEmail(tenant.id, body.email);
       db.prepare("UPDATE employees SET email = ? WHERE id = ?").run(body.email, me.id);
       audit(db, now, me.id, "admin_email_changed", { from: tenant.adminEmail, to: body.email });

@@ -91,6 +91,20 @@ describe("登録時のメールアドレス確認", () => {
     expect((await verify(t, tokenOf(t.mailer.sent[1]!))).status).toBe(200);
   });
 
+  it("送り先の変更でも、同じアドレス宛の上限（登録と合わせて24時間3回）を超えて送れない", async () => {
+    const { t, cookie } = await signedUp();
+    const body = (code: string) => ({ companyName: "別会社", code, adminName: "別人", email: "victim@example.com", password: "long-enough-pass-1", acceptTerms: true });
+    expect((await t.call("POST", "/api/signup", { body: body("other-a") })).status).toBe(201); // victim@ 宛に1通目
+    expect((await t.call("POST", "/api/signup", { body: body("other-b") })).status).toBe(201); // 2通目
+    const resend = (email: string) => t.call("POST", "/api/auth/verify/resend", { cookie, body: { email } });
+    expect((await resend("victim@example.com")).status).toBe(200); // 3通目
+    expect((await resend("aoki@example.com")).status).toBe(200);
+    const blocked = await resend("victim@example.com");
+    expect(blocked.status).toBe(429);
+    expect(blocked.json.error).toContain("メールアドレス宛");
+    expect(t.mailer.sent.filter((m) => m.to === "victim@example.com")).toHaveLength(3);
+  });
+
   it("アドレスが変更された後は、変更前のアドレス宛のリンクでは確認できない（他の経路で変わった場合も）", async () => {
     const { t, tenant } = await signedUp();
     const token = tokenOf(t.mailer.sent[0]!);

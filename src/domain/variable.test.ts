@@ -147,6 +147,15 @@ describe("法定休日とシフト", () => {
     expect(wed.legalHolidayMin).toBe(h(5));
   });
 
+  it("同じ週に法定休日を2日指定した場合は、どちらの日も法定休日として扱う（指定が重複しても、後の日が曜日の判定に戻らない）", () => {
+    const sched = [off("2026-10-07", "legal_off"), off("2026-10-09", "legal_off")];
+    const l = ledger([...work("2026-10-07", h(3)), ...work("2026-10-09", h(2)), ...work(sun, h(4))], { schedules: sched });
+    expect(l.isLegalHoliday(base, "2026-10-07")).toBe(true);
+    expect(l.isLegalHoliday(base, "2026-10-09")).toBe(true);
+    expect(l.isLegalHoliday(base, sun)).toBe(false);
+    expect(l.monthOf(base, "2026-10").result.legalHolidayMin).toBe(h(5));
+  });
+
   it("法定休日の曜日を会社の設定で変えられる（土曜）", () => {
     const sat = "2026-10-10";
     const sun = "2026-10-11";
