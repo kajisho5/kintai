@@ -135,6 +135,8 @@ docker compose exec app node --disable-warning=ExperimentalWarning dist-server/c
 
 ## 9. 労働時間の計算の前提と簡略化
 
+社労士・弁護士への確認依頼には、[docs/labor-rules-review.md](labor-rules-review.md)（ルール一覧・計算例・確認してほしい点）をお使いください。
+
 集計・警告は参考情報です。**公開前に、社会保険労務士に、次の前提が貴社の就業規則・労使協定に合うかを確認してもらってください。**
 
 ### 判定のしかた（根拠）
