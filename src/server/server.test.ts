@@ -23,7 +23,7 @@ describe("認証", () => {
 
   it("パスワードの値は DB に平文で保存されない", () => {
     const rows = t.db.prepare("SELECT password_hash FROM employees").all() as { password_hash: string }[];
-    expect(rows.every((r) => r.password_hash.startsWith("scrypt$") && !r.password_hash.includes(PASSWORD))).toBe(true);
+    expect(rows.every((r) => r.password_hash.startsWith("scrypt2$15$") && !r.password_hash.includes(PASSWORD))).toBe(true);
   });
 
   it("ログアウト後は同じ Cookie が使えない", async () => {
@@ -316,5 +316,21 @@ describe("申請と承認", () => {
     for (let i = 0; i < left; i++) db.prepare("INSERT INTO paid_leave (emp_id, date, days) VALUES ('e10', ?, 1)").run(`2027-02-${String(1 + i).padStart(2, "0")}`);
     const r = await t.call("POST", "/api/requests", { cookie: emp, body: { kind: "有給申請", date: "2026-11-02", days: 1, reason: "私用" } });
     expect(r.status).toBe(409);
+  });
+});
+
+describe("パスワードのハッシュの更新", () => {
+  it("古い形式（コストの低い scrypt）のハッシュでもログインでき、ログインできたときに今のパラメータで作り直される", async () => {
+    const t = setup({ nowMin: 600, at: "10:00" });
+    const { scryptSync, randomBytes } = await import("node:crypto");
+    const salt = randomBytes(16);
+    const legacy = `scrypt$${salt.toString("base64url")}$${scryptSync(PASSWORD, salt, 64).toString("base64url")}`;
+    t.db.prepare("UPDATE employees SET password_hash = ? WHERE id = 'e02'").run(legacy);
+    expect((await t.call("POST", "/api/auth/login", { body: { company: "demo", id: "e02", password: "wrong-password-xx" } })).status).toBe(401);
+    expect((t.db.prepare("SELECT password_hash FROM employees WHERE id = 'e02'").get() as { password_hash: string }).password_hash).toBe(legacy);
+    expect((await t.call("POST", "/api/auth/login", { body: { company: "demo", id: "e02", password: PASSWORD } })).status).toBe(200);
+    const after = (t.db.prepare("SELECT password_hash FROM employees WHERE id = 'e02'").get() as { password_hash: string }).password_hash;
+    expect(after.startsWith("scrypt2$15$")).toBe(true);
+    expect((await t.call("POST", "/api/auth/login", { body: { company: "demo", id: "e02", password: PASSWORD } })).status).toBe(200); // 新しい形式でも入れる
   });
 });

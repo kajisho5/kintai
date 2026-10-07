@@ -150,7 +150,7 @@ export class TenantManager {
    * @param tenantDir テナント DB を置くディレクトリ。":memory:" ならメモリ上（テスト用・閉じない）
    */
   constructor(controlFile: string, private readonly tenantDir: string, private readonly maxOpen = 500) {
-    if (tenantDir !== ":memory:") mkdirSync(tenantDir, { recursive: true });
+    if (tenantDir !== ":memory:") mkdirSync(tenantDir, { recursive: true, mode: 0o700 });
     this.control = new DatabaseSync(controlFile);
     this.control.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
     migrate(this.control, CONTROL_MIGRATIONS);

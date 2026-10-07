@@ -4,8 +4,14 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    # 不要な権限を与えない
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       DATA_DIR: /data
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY を .env に設定してください（openssl rand -base64 32）}
       TRUST_PROXY: "1"
       SECURE_COOKIE: "1"
     volumes:

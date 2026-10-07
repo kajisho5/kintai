@@ -3,10 +3,11 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { HOLIDAYS_JP_LAST_YEAR } from "../../domain/holidays-jp";
 import { isDate, WORK_STYLES, type WorkStyle, type EmployeeAdmin, type EmployeesResponse, type ImportResponse, type ImportRowError, type SettingsResponse } from "../../domain";
-import { cardHash, hashPassword, normalizeCard } from "../auth";
-import { activeCount, ApiError, parse, requireAdmin, type Env } from "../context";
+import { RateLimiter } from "../ratelimit";
+import { cardHash, forgetDevices, hashPassword, hashTemporaryPassword, normalizeCard } from "../auth";
+import { activeCount, ApiError, parse, plainLine, requireAdmin, type Env } from "../context";
 import { audit, tx, type Db } from "../db";
-import { parseCsv } from "../csv";
+import { csvTooBig, parseCsv } from "../csv";
 import { exportCompany } from "../export";
 import { loadSettings } from "../repo";
 import { syncSeats } from "../seats";
@@ -72,6 +73,8 @@ const toAdminView = (r: EmpRow): EmployeeAdmin => ({
 
 const idStr = z.string().trim().regex(/^[A-Za-z0-9._-]{1,30}$/, "社員IDは半角英数字と . _ - の30文字以内で入力してください");
 const dateStr = z.string().refine(isDate, "日付の形式が正しくありません（例: 2026-04-01）");
+/** 入社日。極端な日付（9999年など）は、集計・有給の計算で桁あふれするため、範囲を限る */
+const hiredStr = dateStr.refine((d) => d >= "1950-01-01" && d <= "2100-12-31", "入社日は 1950年〜2100年 の範囲で入力してください");
 const weekdays = z
   .array(z.number().int().min(0).max(6))
   .min(1, "所定労働日を1日以上選んでください")
@@ -81,9 +84,9 @@ const weekdays = z
 const carryNum = z.number().min(0, "繰越は0以上にしてください").max(40, "繰越は40日以内にしてください").multipleOf(0.5, "繰越は0.5日単位で入力してください");
 
 const fields = {
-  name: z.string().trim().min(1, "氏名を入力してください").max(40, "氏名は40文字以内で入力してください"),
-  dept: z.string().trim().min(1, "部署を入力してください").max(30, "部署は30文字以内で入力してください"),
-  title: z.string().trim().max(20, "役職は20文字以内で入力してください").default(""),
+  name: plainLine("氏名", 40),
+  dept: plainLine("部署", 30),
+  title: plainLine("役職", 20, 0).default(""),
   kind: z.enum(["正社員", "パート"], "雇用区分は「正社員」か「パート」にしてください"),
   role: z.enum(["admin", "employee"]).default("employee"),
   workStyle: z.enum(WORK_STYLES, "勤務区分が正しくありません").default("fixed"),
@@ -100,7 +103,7 @@ const fields = {
   weeklyDays: z.number().int().min(1).max(7).optional(),
   weeklyHours: z.number().min(1).max(80).optional(),
   schedStart: z.number().int().min(0).max(1439),
-  hired: dateStr,
+  hired: hiredStr,
   carry: carryNum.default(0),
 };
 
@@ -108,7 +111,7 @@ const createSchema = z.object({ id: idStr, ...fields, password: z.string().min(8
 const patchSchema = z.object({
   name: fields.name.optional(),
   dept: fields.dept.optional(),
-  title: z.string().trim().max(20).optional(),
+  title: plainLine("役職", 20, 0).optional(),
   kind: fields.kind.optional(),
   role: z.enum(["admin", "employee"]).optional(),
   workStyle: z.enum(WORK_STYLES, "勤務区分が正しくありません").optional(),
@@ -119,7 +122,7 @@ const patchSchema = z.object({
   weeklyDays: fields.weeklyDays,
   weeklyHours: fields.weeklyHours,
   schedStart: fields.schedStart.optional(),
-  hired: dateStr.optional(),
+  hired: hiredStr.optional(),
   // 更新では、指定のない項目は変更しない（default を持つ fields.carry は使わない）
   carry: carryNum.optional(),
 });
@@ -176,7 +179,9 @@ function parseDate(s: string): string {
   return m ? `${m[1]}-${m[2]!.padStart(2, "0")}-${m[3]!.padStart(2, "0")}` : s.trim();
 }
 
-export function parseEmployeeCsv(text: string, existingIds: Set<string>): { rows: { line: number; data: Created }[]; errors: ImportRowError[] } {
+export function parseEmployeeCsv(text: string, existingIds: Set<string>, existingEmails: Set<string> = new Set()): { rows: { line: number; data: Created }[]; errors: ImportRowError[] } {
+  const big = csvTooBig(text, MAX_IMPORT_ROWS);
+  if (big) return { rows: [], errors: [{ row: 1, message: big }] };
   const table = parseCsv(text);
   const errors: ImportRowError[] = [];
   if (!table.length) return { rows: [], errors: [{ row: 1, message: "CSVが空です" }] };
@@ -188,6 +193,7 @@ export function parseEmployeeCsv(text: string, existingIds: Set<string>): { rows
 
   const rows: { line: number; data: Created }[] = [];
   const seen = new Set<string>();
+  const seenEmails = new Set<string>();
   table.slice(1).forEach((cells, i) => {
     const line = i + 2;
     const get = (name: string) => (col(name) >= 0 ? (cells[col(name)] ?? "").trim() : "");
@@ -225,6 +231,11 @@ export function parseEmployeeCsv(text: string, existingIds: Set<string>): { rows
     if (!r.success) return fail(r.error.issues[0]?.message ?? "入力が正しくありません");
     if (existingIds.has(r.data.id)) return fail(`社員ID「${r.data.id}」はすでに登録されています`);
     if (seen.has(r.data.id)) return fail(`社員ID「${r.data.id}」がCSV内で重複しています`);
+    const mail = r.data.email?.trim().toLowerCase();
+    if (mail) {
+      if (existingEmails.has(mail) || seenEmails.has(mail)) return fail(`メールアドレス「${mail}」は、ほかの社員がすでに使っています`);
+      seenEmails.add(mail);
+    }
     seen.add(r.data.id);
     rows.push({ line, data: r.data as Created });
   });
@@ -233,8 +244,27 @@ export function parseEmployeeCsv(text: string, existingIds: Set<string>): { rows
 
 // ---------------------------------------------------------------- ルート
 
+/** 同じメールアドレスを、在籍中のほかの社員が使っているか（パスワード再設定の案内が、複数の社員に届かないように、1つのアドレスは1人まで） */
+function emailTaken(db: Db, email: string | undefined | null, exceptId?: string): boolean {
+  const m = (email ?? "").trim().toLowerCase();
+  if (!m) return false;
+  return !!db.prepare("SELECT 1 FROM employees WHERE active = 1 AND lower(email) = ? AND id <> ?").get(m, exceptId ?? "");
+}
+
+const EMAIL_TAKEN = "このメールアドレスは、ほかの社員がすでに使っています";
+
 export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
   const app = new Hono<Env>();
+  // 取り込みは、解析が重い（同期処理）ため、会社ごとに回数を制限する
+  const importLimit = new RateLimiter(20, 10 * 60_000);
+  // パスワードのハッシュ計算（重い）を伴う管理操作は、会社ごとに回数を制限する（他の会社のログインを待たせないため）
+  const hashLimit = new RateLimiter(120, 10 * 60_000);
+  const hashGuard = (c: Context<Env>): void => {
+    const now = c.get("clock").now().ts;
+    const key = c.get("tenant").id;
+    if (hashLimit.blocked(key, now)) throw new ApiError(429, "操作が多すぎます。しばらくしてからお試しください");
+    hashLimit.record(key, now);
+  };
 
   const list = (db: Db): EmployeesResponse["rows"] =>
     (db.prepare("SELECT * FROM employees ORDER BY active DESC, id").all() as unknown as EmpRow[]).map(toAdminView);
@@ -270,9 +300,11 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     const e = parse(createSchema, await c.req.json().catch(() => null));
     seatCheck(c, 1);
     if (db.prepare("SELECT 1 FROM employees WHERE id = ?").get(e.id)) throw new ApiError(409, `社員ID「${e.id}」はすでに使われています`);
+    if (emailTaken(db, e.email)) throw new ApiError(409, EMAIL_TAKEN);
     // 管理者が決めたパスワードも、初回ログイン時に本人が変更する
     const pw = e.password ?? tempPassword();
-    const pwHash = await hashPassword(pw);
+    hashGuard(c);
+    const pwHash = e.password ? await hashPassword(pw) : await hashTemporaryPassword(pw);
     // 非同期の計算のあいだに状況が変わりうるため、登録の直前（同期処理の中）でもう一度確認する
     seatCheck(c, 1);
     try {
@@ -291,6 +323,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     const db = c.get("db");
     const cur = target(c);
     const p = parse(patchSchema, await c.req.json().catch(() => null));
+    if (p.email && emailTaken(db, p.email, cur.id)) throw new ApiError(409, EMAIL_TAKEN);
     if (p.role === "employee" && cur.role === "admin" && cur.active === 1 && activeAdmins(db) <= 1) {
       throw new ApiError(409, "管理者が1人もいなくなるため、権限は変更できません");
     }
@@ -325,6 +358,8 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     if (!sets.length) throw new ApiError(400, "変更する項目がありません");
     db.prepare(`UPDATE employees SET ${sets.join(", ")} WHERE id = ?`).run(...vals, cur.id);
     if (p.role !== undefined && p.role !== cur.role) db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(cur.id);
+    // メールアドレスを変えたら、前のアドレス宛に発行した再設定リンクは使えなくする
+    if (p.email !== undefined && (p.email || null) !== (cur.email ?? null)) db.prepare("UPDATE password_resets SET used_at = ? WHERE emp_id = ? AND used_at IS NULL").run(c.get("clock").now().ts, cur.id);
     audit(db, c.get("clock").now().ts, admin.id, "employee_update", { id: cur.id, fields: Object.keys(p) });
     return c.json({ ok: true });
   });
@@ -335,9 +370,12 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     const cur = target(c);
     if (cur.id === admin.id) throw new ApiError(400, "自分のパスワードは、画面左下の鍵のボタンから変更してください");
     const pw = tempPassword();
-    const pwHash = await hashPassword(pw);
+    hashGuard(c);
+    const pwHash = await hashTemporaryPassword(pw);
     db.prepare("UPDATE employees SET password_hash = ?, must_change_password = 1 WHERE id = ?").run(pwHash, cur.id);
     db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(cur.id);
+    forgetDevices(db, cur.id);
+    db.prepare("UPDATE password_resets SET used_at = ? WHERE emp_id = ? AND used_at IS NULL").run(c.get("clock").now().ts, cur.id); // 発行済みの再設定リンクも無効にする
     audit(db, c.get("clock").now().ts, admin.id, "employee_reset_password", { id: cur.id });
     return c.json({ id: cur.id, tempPassword: pw });
   });
@@ -354,6 +392,8 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
       db.prepare("UPDATE employees SET active = 0, left_on = ?, punch_pin_hash = NULL, card_hash = NULL WHERE id = ?").run(c.get("clock").now().date, cur.id);
       db.prepare("DELETE FROM kiosk_tickets WHERE emp_id = ?").run(cur.id);
       db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(cur.id);
+      db.prepare("UPDATE password_resets SET used_at = ? WHERE emp_id = ? AND used_at IS NULL").run(c.get("clock").now().ts, cur.id);
+      forgetDevices(db, cur.id);
       // 未処理の申請は取り下げ扱いにする
       db.prepare("UPDATE requests SET status = 'cancelled' WHERE emp_id = ? AND status = 'pending'").run(cur.id);
     });
@@ -368,6 +408,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     const cur = target(c);
     if (cur.active === 1) throw new ApiError(409, "すでに在籍中です");
     seatCheck(c, 1);
+    if (emailTaken(db, cur.email, cur.id)) throw new ApiError(409, "このメールアドレスは、ほかの社員がすでに使っています。先にメールアドレスを変更してください");
     db.prepare("UPDATE employees SET active = 1, left_on = NULL WHERE id = ?").run(cur.id);
     audit(db, c.get("clock").now().ts, admin.id, "employee_reactivate", { id: cur.id });
     seatsChanged(c);
@@ -376,10 +417,15 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
 
   app.post("/api/employees/import", async (c) => {
     const admin = requireAdmin(c);
+    const nowTs = c.get("clock").now().ts;
+    const lim = c.get("tenant").id;
+    if (importLimit.blocked(lim, nowTs)) throw new ApiError(429, "取り込みの操作が多すぎます。しばらくしてからお試しください");
+    importLimit.record(lim, nowTs);
     const db = c.get("db");
-    const body = parse(z.object({ csv: z.string().max(2_000_000), dryRun: z.boolean().default(false) }), await c.req.json().catch(() => null));
+    const body = parse(z.object({ csv: z.string().max(800_000), dryRun: z.boolean().default(false) }), await c.req.json().catch(() => null));
     const existing = new Set((db.prepare("SELECT id FROM employees").all() as { id: string }[]).map((r) => r.id));
-    const { rows, errors } = parseEmployeeCsv(body.csv, existing);
+    const emails = new Set((db.prepare("SELECT lower(email) AS m FROM employees WHERE active = 1 AND email IS NOT NULL AND email <> ''").all() as { m: string }[]).map((r) => r.m));
+    const { rows, errors } = parseEmployeeCsv(body.csv, existing, emails);
     const limit = c.get("access").seatLimit;
     if (!errors.length && activeCount(db) + rows.length > limit) {
       errors.push({ row: 1, message: `取り込むとご契約の人数（${limit}名）を超えます（現在${activeCount(db)}名 + ${rows.length}名）` });
@@ -388,7 +434,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     if (body.dryRun) return c.json({ ok: true, dryRun: true, count: rows.length } satisfies ImportResponse);
 
     const credentials = rows.map(({ data }) => ({ id: data.id, name: data.name, tempPassword: tempPassword() }));
-    const hashes = await Promise.all(credentials.map((c) => hashPassword(c.tempPassword))); // 同時に計算してもイベントループは止まらない
+    const hashes = await Promise.all(credentials.map((c) => hashTemporaryPassword(c.tempPassword))); // 同時に計算してもイベントループは止まらない
     if (activeCount(db) + rows.length > limit) throw new ApiError(409, `ご契約の人数（${limit}名）を超えるため取り込めません`, "SEAT_LIMIT");
     try {
       tx(db, () => rows.forEach(({ data }, i) => insertEmployee(db, data, hashes[i]!, true)));
@@ -452,7 +498,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     const db = c.get("db");
     const p = parse(
       z.object({
-        name: z.string().trim().min(1, "会社名を入力してください").max(60).optional(),
+        name: plainLine("会社名", 60).optional(),
         specialClause: z.boolean().optional(),
         fyStartMonth: z.number().int().min(1).max(12).optional(),
         legalHolidayDow: z.number().int().min(0).max(6).optional(),
@@ -549,7 +595,7 @@ export function adminRoutes({ manager, billing }: Deps): Hono<Env> {
     const cur = target(c);
     if (cur.active !== 1) throw new ApiError(409, "退職した社員には発行できません");
     const pin = newPin();
-    db.prepare("UPDATE employees SET punch_pin_hash = ? WHERE id = ?").run(await hashPassword(pin), cur.id);
+    db.prepare("UPDATE employees SET punch_pin_hash = ? WHERE id = ?").run((hashGuard(c), await hashPassword(pin)), cur.id);
     audit(db, c.get("clock").now().ts, admin.id, "punch_pin_issue", { id: cur.id });
     return c.json({ id: cur.id, pin });
   });

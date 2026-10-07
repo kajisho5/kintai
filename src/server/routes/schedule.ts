@@ -2,7 +2,8 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { addDays, addYm, isDate, isYm, lastDateOfMonth, type ImportRowError, type ScheduleImportResponse, type ScheduleItem, type ScheduleResponse, type WorkStyle } from "../../domain";
 import { ApiError, brief, parse, requireAdmin, type Env } from "../context";
-import { parseCsv } from "../csv";
+import { csvTooBig, parseCsv } from "../csv";
+import { RateLimiter } from "../ratelimit";
 import { audit, tx, type Db } from "../db";
 import { loadEmployees } from "../repo";
 
@@ -45,6 +46,8 @@ function parseDateLoose(s: string): string {
 }
 
 export function parseScheduleCsv(text: string): { items: ScheduleItem[]; errors: ImportRowError[] } {
+  const big = csvTooBig(text, MAX_IMPORT_ROWS);
+  if (big) return { items: [], errors: [{ row: 1, message: big }] };
   const table = parseCsv(text);
   const errors: ImportRowError[] = [];
   if (!table.length) return { items: [], errors: [{ row: 1, message: "CSVが空です" }] };
@@ -109,6 +112,7 @@ function apply(db: Db, items: ScheduleItem[]): void {
 /** シフト（勤務予定）。変形労働時間制では、これが「あらかじめ定めた労働時間」になる */
 export function scheduleRoutes(): Hono<Env> {
   const app = new Hono<Env>();
+  const importLimit = new RateLimiter(20, 10 * 60_000);
 
   app.get("/api/schedules", (c) => {
     const db = c.get("db");
@@ -179,8 +183,11 @@ export function scheduleRoutes(): Hono<Env> {
 
   app.post("/api/schedules/import", async (c) => {
     const admin = requireAdmin(c);
+    const nowTs = c.get("clock").now().ts;
+    if (importLimit.blocked(c.get("tenant").id, nowTs)) throw new ApiError(429, "取り込みの操作が多すぎます。しばらくしてからお試しください");
+    importLimit.record(c.get("tenant").id, nowTs);
     const db = c.get("db");
-    const body = parse(z.object({ csv: z.string().max(2_000_000), dryRun: z.boolean().default(false) }), await c.req.json().catch(() => null));
+    const body = parse(z.object({ csv: z.string().max(800_000), dryRun: z.boolean().default(false) }), await c.req.json().catch(() => null));
     const now = c.get("clock").now();
     const { items, errors } = parseScheduleCsv(body.csv);
     if (!errors.length) errors.push(...validate(db, now.date, items));

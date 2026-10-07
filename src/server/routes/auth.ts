@@ -4,8 +4,8 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import { HOLIDAYS_JP_LAST_YEAR } from "../../domain/holidays-jp";
 import { ymOfDate, type MeResponse } from "../../domain";
-import { burnPasswordCheck, checkCredentials, createSession, destroySession, hashPassword, LoginThrottle } from "../auth";
-import { activeCount, ApiError, brief, COOKIE, parse, pendingCount, requireAdmin, type AppConfig, type Env } from "../context";
+import { burnPasswordCheck, checkCredentials, createSession, destroySession, DEVICE_TTL_MS, deviceKnown, forgetDevices, hashPassword, issueDevice, LoginThrottle } from "../auth";
+import { activeCount, ApiError, brief, COOKIE, parse, pendingCount, plainLine, requireAdmin, type AppConfig, type Env } from "../context";
 import { validateCode, type TenantManager } from "../control";
 import { audit, tx } from "../db";
 import { MailTargetGuard, RateLimiter } from "../ratelimit";
@@ -37,7 +37,8 @@ const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 export function clientIp(c: Context, trustProxy?: boolean): string {
   if (trustProxy) {
     const xff = c.req.header("x-forwarded-for");
-    if (xff) return xff.split(",")[0]!.trim();
+    // 右端（直前のプロキシが付けたアドレス）を使う。左側は、クライアントが自由に書けるため信用しない
+    if (xff) return xff.split(",").at(-1)!.trim();
   }
   const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;
   return env?.incoming?.socket?.remoteAddress ?? "unknown";
@@ -45,18 +46,16 @@ export function clientIp(c: Context, trustProxy?: boolean): string {
 
 const verifyLink = (appUrl: string, code: string, token: string) => `${appUrl}/app/#/verify?company=${encodeURIComponent(code)}&token=${token}`;
 
+const DEVICE_COOKIE = "kd";
+/** 端末の印（Cookie）。この会社のものだけを取り出す */
+function deviceCookie(c: Context, tenantId: string): string | undefined {
+  const v = getCookie(c, DEVICE_COOKIE);
+  const dot = v?.indexOf(".") ?? -1;
+  return v && dot > 0 && v.slice(0, dot) === tenantId ? v.slice(dot + 1) : undefined;
+}
+
 const setSession = (c: Context, cfg: AppConfig, tenantId: string, token: string) =>
   setCookie(c, COOKIE, `${tenantId}.${token}`, { httpOnly: true, sameSite: "Lax", secure: cfg.secureCookie, path: "/", maxAge: cfg.sessionHours * 3600 });
-
-/** 1行の名前。改行などの制御文字とURLは受け付けない（案内メールの本文にそのまま入るため、第三者への悪用を防ぐ） */
-const plainLine = (label: string, max: number) =>
-  z
-    .string()
-    .trim()
-    .min(1, `${label}を入力してください`)
-    .max(max, `${label}は${max}文字以内で入力してください`)
-    .refine((v) => !/[\u0000-\u001f\u007f\u2028\u2029]/.test(v), `${label}に使えない文字が含まれています`)
-    .refine((v) => !/https?:|www\.|:\/\//i.test(v), `${label}にURLは入力できません`);
 
 const signupSchema = z.object({
   companyName: plainLine("会社名", 60),
@@ -74,7 +73,7 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl, mailTa
   // 同じアカウントを同じIPから5回失敗 → 5分ロック。さらに、IPを替えても同じアカウントへの失敗が多すぎれば15分ロック。
   // （アカウント単位だけだと、他人が失敗を重ねて管理者を締め出せてしまう）
   const accountIpThrottle = new LoginThrottle(5, 5 * 60_000);
-  const accountThrottle = new LoginThrottle(20, 15 * 60_000);
+  const accountThrottle = new LoginThrottle(20, 15 * 60_000, 30 * 60_000);
   const ipFails = new RateLimiter(20, 10 * 60_000);
   const signupLimit = new RateLimiter(10, 60 * 60_000);
   const checkLimit = new RateLimiter(60, 10 * 60_000);
@@ -84,6 +83,8 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl, mailTa
   // （他人が先に申請を使い切って、本人が申請できなくなるのを防ぐため、宛先単位の上限は緩めに）
   const forgotKey = new RateLimiter(10, 60 * 60_000);
   const forgotKeyIp = new RateLimiter(3, 60 * 60_000);
+  // 会社を何社つくっても、同じ宛先へは、全社で1時間6通まで（他人のアドレスを社員に登録して、再設定メールを送りつける迷惑行為への対策）
+  const forgotAddress = new RateLimiter(6, 60 * 60_000);
   const resetIp = new RateLimiter(20, 10 * 60_000);
   const verifyIp = new RateLimiter(30, 10 * 60_000);
 
@@ -96,8 +97,16 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl, mailTa
     const ip = clientIp(c, config.trustProxy);
     const key = `${body.company}/${body.id}`;
     if (ipFails.blocked(ip, now)) throw new ApiError(429, `ログインの試行が多すぎます。${ipFails.retryAfterMin(ip, now)}分ほど待ってからお試しください`);
-    const until = Math.max(accountIpThrottle.lockedUntil(`${key}|${ip}`, now), accountThrottle.lockedUntil(key, now));
-    if (until) throw new ApiError(423, `ログインに続けて失敗したため、しばらくロックしています（あと${Math.ceil((until - now) / 60000)}分）`);
+    // この端末・この接続元でのロックは、そのまま適用する。アカウント全体のロック（他の接続元からの失敗が積み重なったもの）は、
+    // 前にこの社員がログインに成功した端末（Cookie）なら、パスワードの確認に進める（他人がロックをかけて、本人を締め出すのを防ぐ）
+    const ownLock = accountIpThrottle.lockedUntil(`${key}|${ip}`, now);
+    if (ownLock) throw new ApiError(423, `ログインに続けて失敗したため、しばらくロックしています（あと${Math.ceil((ownLock - now) / 60000)}分）`);
+    const accountLock = accountThrottle.lockedUntil(key, now);
+    if (accountLock) {
+      const tenantForDevice = manager.findByCode(body.company);
+      const knownDevice = !!tenantForDevice && deviceKnown(manager.db(tenantForDevice.id), deviceCookie(c, tenantForDevice.id), body.id, now);
+      if (!knownDevice) throw new ApiError(423, `ログインに続けて失敗したため、しばらくロックしています（あと${Math.ceil((accountLock - now) / 60000)}分）`);
+    }
 
     // 検証（時間のかかる計算）の前に、この試行を失敗として数えておく。検証を待つあいだに同時に届いた試行も、上限に数えられる。
     // 成功したときだけ、あとで取り消す（同時に大量の試行を送って、制限を素通りされないため）
@@ -115,7 +124,9 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl, mailTa
     const db = manager.db(tenant.id);
     const r = await checkCredentials(db, body.id, body.password);
     if (!r.ok) {
-      audit(db, now, body.id, "login_failed", { ip });
+      // 存在しない社員IDは、操作者として記録しない（第三者が、任意の文字列を操作記録に書き込めないように）
+      const exists = !!db.prepare("SELECT 1 FROM employees WHERE id = ?").get(body.id);
+      audit(db, now, exists ? body.id : "-", "login_failed", { ip });
       return fail();
     }
     if (tenant.status === "suspended") throw new ApiError(403, "このアカウントは停止されています。サポートにお問い合わせください");
@@ -137,6 +148,9 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl, mailTa
     }
     const token = createSession(db, r.id, now, config.sessionHours * 3600_000);
     setSession(c, config, tenant.id, token);
+    if (!deviceKnown(db, deviceCookie(c, tenant.id), r.id, now)) {
+      setCookie(c, DEVICE_COOKIE, `${tenant.id}.${issueDevice(db, r.id, now)}`, { httpOnly: true, sameSite: "Lax", secure: config.secureCookie, path: "/", maxAge: DEVICE_TTL_MS / 1000 });
+    }
     audit(db, now, r.id, "login", { ip });
     return c.json({ ok: true });
   });
@@ -244,16 +258,18 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl, mailTa
     const now = clockFor("Asia/Tokyo").now().ts;
     const ip = clientIp(c, config.trustProxy);
     const k = `${b.company}/${b.email}`;
-    if (forgotIp.blocked(ip, now) || forgotKey.blocked(k, now) || forgotKeyIp.blocked(`${k}|${ip}`, now)) throw new ApiError(429, "しばらく待ってからもう一度お試しください");
+    if (forgotIp.blocked(ip, now) || forgotKey.blocked(k, now) || forgotKeyIp.blocked(`${k}|${ip}`, now) || forgotAddress.blocked(b.email, now)) throw new ApiError(429, "しばらく待ってからもう一度お試しください");
     forgotIp.record(ip, now);
     forgotKey.record(k, now);
     forgotKeyIp.record(`${k}|${ip}`, now);
+    forgotAddress.record(b.email, now);
 
     const tenant = manager.findByCode(b.company);
     // メールアドレスが未確認の会社には送らない（他人のアドレスで登録された場合に、そのアドレスへ繰り返し送られるのを防ぐ）
     if (tenant && tenant.status !== "suspended" && tenant.adminEmailVerifiedAt && appUrl) {
       const db = manager.db(tenant.id);
-      const emps = db.prepare("SELECT id FROM employees WHERE active = 1 AND lower(email) = ?").all(b.email) as { id: string }[];
+      // 同じアドレスの社員が何人いても、1回の申請で送るのは1通まで（以前に登録された重複は、先頭の1人だけ）
+      const emps = db.prepare("SELECT id FROM employees WHERE active = 1 AND lower(email) = ? ORDER BY id LIMIT 1").all(b.email) as { id: string }[];
       for (const e of emps) {
         const token = randomBytes(32).toString("base64url");
         db.prepare("INSERT INTO password_resets (token_hash, emp_id, expires_at) VALUES (?, ?, ?)").run(sha256(token), e.id, now + RESET_MINUTES * 60_000);
@@ -287,6 +303,7 @@ export function publicRoutes({ manager, clockFor, config, mailer, appUrl, mailTa
       if (!emp) throw invalid();
       db.prepare("UPDATE employees SET password_hash = ?, must_change_password = 0 WHERE id = ?").run(pwHash, row.id);
       db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(row.id);
+      forgetDevices(db, row.id);
       db.prepare("UPDATE password_resets SET used_at = ? WHERE emp_id = ?").run(now, row.id); // この人の未使用トークンはすべて無効にする
       audit(db, now, row.id, "password_reset", { ip });
     });
@@ -349,9 +366,11 @@ export function accountRoutes({ config, manager, mailer, appUrl, mailTargets }: 
     if (!appUrl) throw new ApiError(503, "メールを送信できない設定です。運営にお問い合わせください");
     if (resendLimit.blocked(tenant.id, now)) throw new ApiError(429, "確認メールの送信が多すぎます。しばらくしてからお試しください");
     resendLimit.record(tenant.id, now);
+    // 送り先が同じでも、変更でも、同じアドレス宛の上限（登録と共通）を適用する
+    const limited = mailTargets.reserve(body.email ?? tenant.adminEmail, now);
+    if (limited) throw new ApiError(429, limited);
+    const changedTo = !!body.email && body.email !== tenant.adminEmail; // 送り先を変えるときは、利用者が入力した氏名を、本文に入れない
     if (body.email && body.email !== tenant.adminEmail) {
-      const limited = mailTargets.reserve(body.email, now);
-      if (limited) throw new ApiError(429, limited);
       manager.changeAdminEmail(tenant.id, body.email);
       db.prepare("UPDATE employees SET email = ? WHERE id = ?").run(body.email, me.id);
       audit(db, now, me.id, "admin_email_changed", { from: tenant.adminEmail, to: body.email });
@@ -359,7 +378,7 @@ export function accountRoutes({ config, manager, mailer, appUrl, mailTargets }: 
     const email = body.email ?? tenant.adminEmail;
     const token = manager.issueEmailVerification(tenant.id, email, now, VERIFY_HOURS * 3600_000);
     try {
-      await mailer.send({ to: email, ...templates.verifyEmail({ adminName: me.name, verifyUrl: verifyLink(appUrl, tenant.code, token), hours: VERIFY_HOURS }) });
+      await mailer.send({ to: email, ...templates.verifyEmail({ adminName: changedTo ? "ご担当者" : me.name, verifyUrl: verifyLink(appUrl, tenant.code, token), hours: VERIFY_HOURS }) });
     } catch (e) {
       console.error("確認メールを送れませんでした:", e instanceof Error ? e.message : e);
       throw new ApiError(502, "メールを送信できませんでした。しばらくしてからもう一度お試しください");
@@ -392,6 +411,8 @@ export function accountRoutes({ config, manager, mailer, appUrl, mailTargets }: 
     db.prepare("UPDATE employees SET password_hash = ?, must_change_password = 0 WHERE id = ?").run(nextHash, me.id);
     // 他の端末のログインは無効にし、この端末には新しいセッションを発行する
     db.prepare("DELETE FROM sessions WHERE emp_id = ?").run(me.id);
+    forgetDevices(db, me.id);
+    db.prepare("UPDATE password_resets SET used_at = ? WHERE emp_id = ? AND used_at IS NULL").run(now.ts, me.id); // 発行済みの再設定リンクも無効にする
     const token = createSession(db, me.id, now.ts, config.sessionHours * 3600_000);
     setSession(c, config, tenant.id, token);
     audit(db, now.ts, me.id, "password_change", {});

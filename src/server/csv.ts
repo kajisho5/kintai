@@ -32,3 +32,20 @@ export function parseCsv(text: string): string[][] {
   }
   return rows.filter((r) => r.some((c) => c.trim() !== ""));
 }
+
+/**
+ * 取り込む前の、おおまかな確認（解析は同期処理で重いため、行数・列数が多すぎる入力を、解析の前に断る）。
+ * 改行の数と、カンマ・タブの数だけを数える。問題があれば、利用者向けのメッセージ。
+ */
+export function csvTooBig(text: string, maxRows: number, maxCols = 60): string | undefined {
+  let lines = 1;
+  let separators = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 10) lines++;
+    else if (ch === 44 || ch === 9) separators++;
+  }
+  if (lines - 1 > maxRows + 10) return `一度に取り込めるのは${maxRows}行までです`;
+  if (separators > (maxRows + 10) * maxCols) return "列が多すぎます。テンプレートの形式で作成してください";
+  return undefined;
+}

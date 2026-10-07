@@ -53,7 +53,7 @@ describe("二段階認証（API）", () => {
   const codeNow = (secret: string, offset = 0) => totpAt(secret, stepOf(t.clock.now().ts) + offset);
   const login = (id: string, code?: string, password = PASSWORD) => t.call("POST", "/api/auth/login", { body: { company: "demo", id, password, ...(code ? { code } : {}) } });
   const enable = async (cookie: string): Promise<{ secret: string; recovery: string[] }> => {
-    const s = (await t.call("POST", "/api/auth/2fa/setup", { cookie })).json as TwoFactorSetup;
+    const s = (await t.call("POST", "/api/auth/2fa/setup", { cookie, body: { password: PASSWORD } })).json as TwoFactorSetup;
     const r = await t.call("POST", "/api/auth/2fa/enable", { cookie, body: { code: codeNow(s.secret) } });
     expect(r.status).toBe(200);
     return { secret: s.secret, recovery: r.json.recoveryCodes };
@@ -66,7 +66,7 @@ describe("二段階認証（API）", () => {
 
   it("設定: 秘密鍵とURIが発行され、確認コードが合えば有効になり、回復コードが一度だけ表示される。未設定→設定済みの状態が分かる", async () => {
     expect((await t.call("GET", "/api/auth/2fa", { cookie: admin })).json).toEqual({ enabled: false, required: false });
-    const s = (await t.call("POST", "/api/auth/2fa/setup", { cookie: admin })).json as TwoFactorSetup;
+    const s = (await t.call("POST", "/api/auth/2fa/setup", { cookie: admin, body: { password: PASSWORD } })).json as TwoFactorSetup;
     expect(s.secret).toMatch(/^[A-Z2-7]{32}$/);
     expect(s.uri).toContain(`secret=${s.secret}`);
     expect(s.uri).toContain("otpauth://totp/");
@@ -78,7 +78,7 @@ describe("二段階認証（API）", () => {
     expect(ok.status).toBe(200);
     expect(ok.json.recoveryCodes).toHaveLength(8);
     expect((await t.call("GET", "/api/auth/2fa", { cookie: admin })).json.enabled).toBe(true);
-    expect((await t.call("POST", "/api/auth/2fa/setup", { cookie: admin })).status).toBe(409);
+    expect((await t.call("POST", "/api/auth/2fa/setup", { cookie: admin, body: { password: PASSWORD } })).status).toBe(409);
     // 保存されているのは、暗号化された秘密鍵と回復コードのハッシュだけ
     const row = t.db.prepare("SELECT totp_secret AS s, totp_recovery AS r FROM employees WHERE id = 'e16'").get() as { s: string; r: string };
     expect(row.s).toMatch(/^(plain|v1):/);

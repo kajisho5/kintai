@@ -41,6 +41,15 @@ const BEFORE_PASSWORD_CHANGE = new Set(["/api/me", "/api/auth/password", "/api/a
 /** 会社が管理者に二段階認証を必須にしているのに未設定のとき、設定が済むまで許す操作 */
 const BEFORE_TWO_FACTOR = new Set([...BEFORE_PASSWORD_CHANGE, "/api/auth/2fa", "/api/auth/2fa/setup", "/api/auth/2fa/enable"]);
 
+/** Origin ヘッダーのホスト。'null' や不正な値は、どのホストとも一致しない値にする */
+const originHost = (origin: string): string => {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return "\u0000invalid";
+  }
+};
+
 export function createApp(deps: AppDeps): Hono<Env> {
   const { manager, config } = deps;
   const app = new Hono<Env>();
@@ -54,6 +63,9 @@ export function createApp(deps: AppDeps): Hono<Env> {
         imgSrc: ["'self'", "data:"],
         fontSrc: ["'self'"],
         frameAncestors: ["'none'"],
+        baseUri: ["'none'"],
+        formAction: ["'self'"],
+        objectSrc: ["'none'"],
       },
     }),
   );
@@ -64,7 +76,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
     bodyLimit({ maxSize, onError: () => { throw new ApiError(413, "送信するデータが大きすぎます"); } });
   const small = limit(64 * 1024);
   const medium = limit(1024 * 1024);
-  const large = limit(3 * 1024 * 1024);
+  const large = limit(1024 * 1024);
   app.use("/api/*", (c, next) =>
     (["/api/employees/import", "/api/schedules/import"].includes(c.req.path) ? large : c.req.path === "/api/billing/webhook" || c.req.path === "/api/schedules" ? medium : small)(c, next),
   );
@@ -74,7 +86,9 @@ export function createApp(deps: AppDeps): Hono<Env> {
     if (c.req.method !== "GET" && c.req.method !== "HEAD") {
       const origin = c.req.header("origin");
       const host = (config.trustProxy ? c.req.header("x-forwarded-host") : undefined) ?? c.req.header("host");
-      if (origin && new URL(origin).host !== host) throw new ApiError(403, "不正なリクエストです");
+      if (origin && originHost(origin) !== host) throw new ApiError(403, "不正なリクエストです");
+      // ブラウザが付ける、リクエスト元の種別。別のサイトからのリクエストは、Origin が無くても拒否する（多層の対策）
+      if (c.req.header("sec-fetch-site") === "cross-site") throw new ApiError(403, "不正なリクエストです");
     }
     c.header("Cache-Control", "no-store");
     await next();

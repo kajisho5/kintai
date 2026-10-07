@@ -15,7 +15,7 @@ export interface BackupResult {
 export function backupAll(manager: TenantManager, rootDir: string, now: Date, keep = 14): BackupResult {
   const stamp = now.toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
   const dir = join(rootDir, stamp);
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   manager.backupControl(join(dir, "control.db"));
   const tenants = manager.list();
   for (const t of tenants) {

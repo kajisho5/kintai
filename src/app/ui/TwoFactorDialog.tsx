@@ -48,11 +48,14 @@ function Body({ required, onClose, onChanged }: { required?: boolean; onClose: (
     }
   };
 
-  const start = () =>
-    run(async () => {
-      const s = await api<TwoFactorSetup>("/api/auth/2fa/setup", { method: "POST" });
+  const start = (e: FormEvent) => {
+    e.preventDefault();
+    void run(async () => {
+      const s = await api<TwoFactorSetup>("/api/auth/2fa/setup", { method: "POST", body: { password } });
       setSetup({ ...s, qr: await QRCode.toDataURL(s.uri, { margin: 1, width: 200 }) });
+      setPassword("");
     });
+  };
   const enable = (e: FormEvent) => {
     e.preventDefault();
     void run(async () => {
@@ -108,9 +111,13 @@ function Body({ required, onClose, onChanged }: { required?: boolean; onClose: (
       <div className="form">
         {required ? <p style={{ margin: 0 }}>会社の設定で、管理者は二段階認証が必須です。設定が済むまで、ほかの操作はできません。</p> : <p style={{ margin: 0 }}>ログインのとき、パスワードに加えて、スマートフォンの認証アプリに表示される6桁のコードが必要になります。パスワードが漏れても、第三者はログインできません。</p>}
         {!setup ? (
-          <div className="actions" style={{ justifyContent: "flex-start" }}>
-            <button type="button" className="btn primary" disabled={busy} onClick={() => void start()}>設定を始める</button>
-          </div>
+          <form className="form" onSubmit={start} style={{ padding: 0 }}>
+            <label>パスワード（本人確認のため、もう一度入力してください）<input className="field" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required style={{ maxWidth: 320 }} /></label>
+            <div className="form-error" role="alert">{error}</div>
+            <div className="actions" style={{ justifyContent: "flex-start" }}>
+              <button type="submit" className="btn primary" disabled={busy || !password}>設定を始める</button>
+            </div>
+          </form>
         ) : (
           <form className="form" onSubmit={enable} style={{ padding: 0 }}>
             <ol style={{ margin: 0, paddingLeft: 20, display: "grid", gap: 6 }}>

@@ -100,6 +100,7 @@ export function kioskPublicRoutes({ manager, clockFor, config }: Deps): Hono<Env
         throw new ApiError(401, "社員IDか暗証番号が違います");
       }
       pinThrottle.success(tkey);
+      pinAttempts.refund(key, now); // 成功は枠に数えない（朝の打刻が集中しても、枠が尽きないように）
       empId = row!.id;
     } else {
       throw new ApiError(400, "カードをかざすか、社員IDと暗証番号を入力してください");

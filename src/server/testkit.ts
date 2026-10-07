@@ -40,13 +40,13 @@ export class FakeBilling implements BillingGateway {
 
 export const APP_URL = "https://app.example.com";
 
-export function setup(opts: { nowMin: number; at: string; seedDemoCompany?: boolean; billing?: BillingGateway; appUrl?: string | null }) {
+export function setup(opts: { nowMin: number; at: string; seedDemoCompany?: boolean; billing?: BillingGateway; appUrl?: string | null; trustProxy?: boolean }) {
   const manager = new TenantManager(":memory:", ":memory:");
   const clock = fixedClock(TODAY, opts.at);
   const mailer = new MemoryMailer();
   const billing = opts.billing ?? new DisabledBilling();
   const appUrl = opts.appUrl === null ? undefined : (opts.appUrl ?? APP_URL);
-  const app = createApp({ manager, clockFor: () => clock, config: { secureCookie: false, sessionHours: 12 }, mailer, billing, appUrl });
+  const app = createApp({ manager, clockFor: () => clock, config: { secureCookie: false, sessionHours: 12, trustProxy: opts.trustProxy }, mailer, billing, appUrl });
 
   const tenant = manager.create({ code: "demo", name: "デモ商事株式会社", adminEmail: "admin@example.com", nowMs: clock.now().ts, emailVerified: true });
   manager.update(tenant.id, { status: "active" });

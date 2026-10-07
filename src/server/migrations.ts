@@ -242,6 +242,19 @@ export const MIGRATIONS: Migration[] = [
       CREATE TRIGGER chg_paid_leave_d AFTER DELETE ON paid_leave BEGIN INSERT INTO data_changes (tbl, emp_id) VALUES ('paid_leave', OLD.emp_id); END;
     `,
   },
+  {
+    id: 11,
+    name: "trusted_devices",
+    sql: `
+      -- 前にログインに成功したことのある端末（ブラウザ）。他人が失敗を重ねてアカウントをロックしても、本人の端末からは入れるようにする
+      CREATE TABLE trusted_devices (
+        token_hash TEXT PRIMARY KEY,
+        emp_id TEXT NOT NULL REFERENCES employees(id),
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_trusted_devices_emp ON trusted_devices (emp_id);
+    `,
+  },
 ];
 
 export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): number[] {

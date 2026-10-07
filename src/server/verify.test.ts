@@ -136,10 +136,25 @@ describe("登録時のメールアドレス確認", () => {
     expect((await t.call("POST", "/api/auth/verify/resend", { cookie, body: {} })).status).toBe(409);
   });
 
-  it("再送は1時間に5回まで", async () => {
+  it("同じアドレス宛の確認メールは、登録と合わせて24時間に3通まで（再送は2回まで）。24時間たてば、また送れる", async () => {
     const { t, cookie } = await signedUp();
-    for (let i = 0; i < 5; i++) expect((await t.call("POST", "/api/auth/verify/resend", { cookie, body: {} })).status).toBe(200);
-    expect((await t.call("POST", "/api/auth/verify/resend", { cookie, body: {} })).status).toBe(429);
+    for (let i = 0; i < 2; i++) expect((await t.call("POST", "/api/auth/verify/resend", { cookie, body: {} })).status).toBe(200);
+    const blocked = await t.call("POST", "/api/auth/verify/resend", { cookie, body: {} });
+    expect(blocked.status).toBe(429);
+    expect(blocked.json.error).toContain("メールアドレス宛");
+    t.clock.set("2026-10-07", "15:00"); // 25時間後（セッションは、ログインし直す）
+    const again = await t.call("POST", "/api/auth/login", { body: { company: "acme", id: "admin", password: "long-enough-pass-1" } });
+    const cookie2 = again.res.headers.get("set-cookie")!.split(";")[0]!;
+    expect((await t.call("POST", "/api/auth/verify/resend", { cookie: cookie2, body: {} })).status).toBe(200);
+  });
+
+  it("送り先を変えて再送するメールの本文には、利用者が入力した氏名を入れない", async () => {
+    const { t, cookie } = await signedUp();
+    await t.call("POST", "/api/auth/verify/resend", { cookie, body: { email: "other@example.com" } });
+    const mail = t.mailer.sent.at(-1)!;
+    expect(mail.to).toBe("other@example.com");
+    expect(mail.text).toContain("ご担当者 様");
+    expect(mail.text).not.toContain("青木");
   });
 
   it("メールの送信に失敗したら、その旨を返す（利用者に成功と誤解させない）", async () => {

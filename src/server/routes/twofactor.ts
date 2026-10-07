@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { TwoFactorSetup } from "../../domain";
 import { BRAND } from "../../brand";
-import { checkCredentials } from "../auth";
+import { checkCredentials, LoginThrottle } from "../auth";
 import { ApiError, parse, type Env } from "../context";
 import { audit, type Db } from "../db";
 import { RateLimiter } from "../ratelimit";
@@ -44,6 +44,7 @@ export function checkSecondFactor(db: Db, empId: string, code: string, nowMs: nu
 export function twoFactorRoutes(_deps: Deps): Hono<Env> {
   const app = new Hono<Env>();
   const limit = new RateLimiter(10, 10 * 60_000);
+  const setupThrottle = new LoginThrottle(5, 5 * 60_000);
 
   const guard = (c: Context<Env>) => {
     const key = `${c.get("tenant").id}/${c.get("me").id}`;
@@ -58,10 +59,17 @@ export function twoFactorRoutes(_deps: Deps): Hono<Env> {
     return c.json({ enabled: hasTotp(c.get("db"), me.id), required: me.role === "admin" && getSetting(c.get("db"), "require_2fa", "0") === "1" });
   });
 
-  app.post("/api/auth/2fa/setup", (c) => {
+  app.post("/api/auth/2fa/setup", async (c) => {
     const me = c.get("me");
     const db = c.get("db");
-    guard(c);
+    const now = guard(c);
+    // セッションを奪われても、第三者が二段階認証を登録して本人を締め出せないよう、パスワードをもう一度確認する（総当たりは、変更時と同じ制限で防ぐ）
+    const b = parse(z.object({ password: z.string().min(1).max(200) }), await c.req.json().catch(() => null));
+    const lock = setupThrottle.lockedUntil(me.id, now);
+    if (lock) throw new ApiError(423, `パスワードの入力に続けて失敗したため、しばらくロックしています（あと${Math.ceil((lock - now) / 60000)}分）`);
+    setupThrottle.failure(me.id, now);
+    if (!(await checkCredentials(db, me.id, b.password)).ok) throw new ApiError(400, "パスワードが違います");
+    setupThrottle.success(me.id);
     if (hasTotp(db, me.id)) throw new ApiError(409, "すでに設定されています。変更するには、いったん解除してください");
     const secret = newSecret();
     db.prepare("UPDATE employees SET totp_pending = ? WHERE id = ?").run(sealSecret(secret), me.id);

@@ -20,6 +20,8 @@ if (process.env.NODE_ENV === "production" && !secureCookie) {
   console.warn("警告: 本番環境では HTTPS を前提に SECURE_COOKIE=1 を設定してください");
 }
 
+// データ・バックアップのファイルは、実行ユーザーだけが読めるようにする（パスワード・暗証番号のハッシュ、二段階認証の秘密鍵が入っている）
+process.umask(0o077);
 const manager = new TenantManager(join(dataDir, "control.db"), join(dataDir, "tenants"));
 const clocks = new Map<string, Clock>();
 const clockFor = (tz: string): Clock => {
@@ -31,7 +33,10 @@ const clockFor = (tz: string): Clock => {
 const mailer = mailerFromEnv(process.env);
 const billing = billingFromEnv(process.env);
 // メール内のリンクと決済後の戻り先に使う公開URL。Host ヘッダは偽装できるため使わない
-if (process.env.NODE_ENV === "production" && !process.env.SECRET_KEY) console.warn("警告: SECRET_KEY が未設定です。二段階認証の秘密鍵が暗号化されずに保存されます");
+if (process.env.NODE_ENV === "production" && (process.env.SECRET_KEY ?? "").length < 32) {
+  console.error("エラー: 本番環境では、SECRET_KEY（32文字以上のランダムな文字列）が必要です。二段階認証の秘密鍵を暗号化して保存するための鍵です。\n生成例: openssl rand -base64 32");
+  process.exit(1);
+}
 const appUrl = process.env.APP_URL?.replace(/\/$/, "");
 if (!appUrl) console.warn("注意: APP_URL が未設定です。登録・パスワード再設定などのメールは送られません");
 
@@ -60,6 +65,8 @@ if (existsSync("dist/index.html")) {
   root.get("/app", (c) => c.redirect("/app/"));
   // ファイル名にハッシュが付く資産は長期キャッシュ。アプリの HTML は常に最新を確認させる
   root.use("/app/assets/*", immutable, serveStatic({ root: "./dist", rewriteRequestPath: strip }));
+  // 実在しない資産は、画面のHTMLではなく 404（HTMLを長期キャッシュさせない）
+  root.all("/app/assets/*", (c) => c.notFound());
   root.get("/app/*", noCache, serveStatic({ path: "./dist/index.html" }));
 }
 

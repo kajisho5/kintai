@@ -4,6 +4,9 @@ import { TenantManager, type TenantStatus } from "./control";
 import { exportCompany } from "./export";
 import { backupAll } from "./ops";
 
+// バックアップ・書き出しのファイルは、実行ユーザーだけが読めるようにする
+process.umask(0o077);
+
 /**
  * 運用コマンド。例: npm run ops -- backup
  *   list                         会社の一覧
@@ -67,7 +70,8 @@ switch (cmd) {
     const t = tenantOf(positional[0]);
     const status = positional[1] as TenantStatus;
     if (!["trialing", "active", "past_due", "canceled", "suspended"].includes(status)) fail("状態は trialing|active|past_due|canceled|suspended のいずれかです");
-    manager.update(t.id, { status });
+    // 支払い遅延は、猶予期間の起点（pastDueSince）が必要。未設定だと、猶予期間が終わらず、書き込みができ続ける
+    manager.update(t.id, { status, ...(status === "past_due" && t.pastDueSince === undefined ? { pastDueSince: Date.now() } : {}) });
     console.log(`${t.code}: ${t.status} → ${status}`);
     break;
   }
