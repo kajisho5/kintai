@@ -145,7 +145,8 @@ export interface SnapshotOptions {
 // 1人分（only）と、前の協定期間の最終月（backTo）の集計は、同じDB・同じ変更回数・同じ分に対して、短時間なら使い回す。DBへの書き込みがあれば、変更回数が変わるので、使い回さない。
 // 全社員の集計は、作るのに時間がかかる（社員数 × 打刻の件数に比例）ので、作ったものを残しておき、変更があったときに差分だけを反映する:
 //  - 打刻は追記のみ（seq が増えていく）なので、前回より後の打刻だけを読み、影響のある社員の集計だけを捨てる
-//  - 社員・設定・祝日・シフト・有給が変わったとき（data_rev の変更回数で検知。トリガーが数える）、日付が変わったとき、
+//  - 社員・シフト・有給が変わったとき（トリガーが data_changes に、変更した社員を記録する）は、その社員の分だけ読み直す
+//  - 設定・祝日が変わったとき（data_rev の変更回数で検知。トリガーが数える）、日付が変わったとき、
 //    ロールバックがあったとき（seq が巻き戻るため）、読み込んだ範囲より前の打刻が増えたときは、作り直す
 //  - 時刻だけが進んだときは、前日から続く勤務のある社員の集計だけを捨てる
 const dbIds = new WeakMap<Db, number>();
@@ -253,20 +254,28 @@ export function snapshot(db: Db, clock: Clock, opts: SnapshotOptions = {}): Snap
       !added.some((e) => e.date < live.from || live.dataFrom === undefined || e.date < live.dataFrom);
     if (incremental) {
       const ledger = live.snap.ledger;
-      ledger.addEvents(added);
+      // DBの読み込みを先に済ませてから、集計を書き換える（途中で例外が出ても、打刻を二重に足さない）
+      const ids = (tbl: string) => [...new Set(changes.filter((c) => c.tbl === tbl).map((c) => c.empId))];
+      const empIds = ids("employees");
       let employees = live.snap.employees;
       let allEmployees = live.snap.allEmployees;
-      if (changes.length) {
-        const ids = (tbl: string) => [...new Set(changes.filter((c) => c.tbl === tbl).map((c) => c.empId))];
-        const empIds = ids("employees");
+      let schedules: [string, ScheduleRow[]][];
+      let leaves: [string, LeaveRow[]][];
+      try {
         if (empIds.length) {
           employees = loadEmployees(db);
           allEmployees = loadEmployees(db, true);
-          for (const id of empIds) ledger.invalidateEmployee(id);
         }
-        for (const id of ids("schedules")) ledger.replaceSchedules(id, loadSchedules(db, live.schedFrom, [id]));
-        for (const id of ids("paid_leave")) ledger.replaceLeaves(id, loadLeaves(db, [id]));
+        schedules = ids("schedules").map((id) => [id, loadSchedules(db, live.schedFrom, [id])]);
+        leaves = ids("paid_leave").map((id) => [id, loadLeaves(db, [id])]);
+      } catch (e) {
+        liveCache.delete(key);
+        throw e;
       }
+      ledger.addEvents(added);
+      for (const id of empIds) ledger.invalidateEmployee(id);
+      for (const [id, rows] of schedules) ledger.replaceSchedules(id, rows);
+      for (const [id, rows] of leaves) ledger.replaceLeaves(id, rows);
       ledger.advance(now.min);
       live.lastSeq = lastSeq;
       live.lastChange = lastChange;
@@ -369,7 +378,7 @@ export function warmSnapshot(db: Db, clock: Clock): void {
   let total = 0;
   for (const v of liveCache.values()) total += v.weight;
   const employees = (db.prepare("SELECT COUNT(*) AS n FROM employees WHERE active = 1").get() as { n: number }).n;
-  if (total + employees * 540 > LIVE_MAX_WEIGHT) return;
+  if (total + employees * 800 > LIVE_MAX_WEIGHT) return;
   snapshot(db, clock);
 }
 

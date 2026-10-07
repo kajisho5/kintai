@@ -219,4 +219,38 @@ describe("集計の差分更新（ゼロから作った集計と一致する）"
     snapshot(db, t.clock);
     expect(snapshotStats.built).toBe(refreshed + 1);
   });
+
+  it("社員のIDの変更（シフト・有給の社員IDの付け替え）も、差分で反映する", () => {
+    const { t, db } = prep();
+    db.prepare(
+      "INSERT INTO employees (id, name, dept, title, kind, role, work_days, weekly_days, weekly_hours, base_min, sched_start, hired, carry, password_hash) VALUES ('n01', '新入', '営業', '', '正社員', 'employee', '[1,2,3,4,5]', 5, 40, 480, 540, '2026-09-01', 0, 'x')",
+    ).run();
+    snapshot(db, t.clock);
+    db.prepare("INSERT INTO paid_leave (emp_id, date, days) VALUES ('n01', ?, 1)").run(addDays(TODAY, -2));
+    db.prepare("INSERT INTO schedules (emp_id, date, kind, start, end, break_min) VALUES ('n01', ?, 'work', 540, 1080, 60)").run(addDays(TODAY, 1));
+    snapshot(db, t.clock);
+    const built = snapshotStats.built;
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.prepare("UPDATE employees SET id = 'n02' WHERE id = 'n01'").run();
+    db.prepare("UPDATE paid_leave SET emp_id = 'n02' WHERE emp_id = 'n01'").run();
+    db.prepare("UPDATE schedules SET emp_id = 'n02' WHERE emp_id = 'n01'").run();
+    db.exec("PRAGMA foreign_keys = ON");
+    const live = snapshot(db, t.clock);
+    expect(live.employees.some((e) => e.id === "n02")).toBe(true);
+    expect(live.employees.some((e) => e.id === "n01")).toBe(false);
+    expect(digest(live)).toEqual(digest(snapshotFresh(db, t.clock)));
+    expect(snapshotStats.built).toBe(built);
+  });
+
+  it("差分の反映の途中でDBの読み込みに失敗しても、打刻が二重に入らない（次の取得で、ゼロから作った結果と一致する）", () => {
+    const { t, db } = prep();
+    snapshot(db, t.clock);
+    db.prepare("INSERT INTO punch_events (emp_id, date, kind, min, created_at) VALUES ('e07', ?, 'in', 540, 1)").run(TODAY);
+    db.prepare("UPDATE employees SET work_days = 'bad' WHERE id = 'e08'").run();
+    expect(() => snapshot(db, t.clock)).toThrow();
+    db.prepare("UPDATE employees SET work_days = '[1,2,3,4,5]' WHERE id = 'e08'").run();
+    expect(digest(snapshot(db, t.clock))).toEqual(digest(snapshotFresh(db, t.clock)));
+    const events = snapshot(db, t.clock).ledger.eventsOf("e07", TODAY).filter((e) => e.min === 540);
+    expect(events).toHaveLength(1);
+  });
 });
