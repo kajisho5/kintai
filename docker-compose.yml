@@ -1,0 +1,38 @@
+# 本番の最小構成: アプリ本体 + HTTPS（Caddy）。データは名前付きボリューム app-data に保存される
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    # 不要な権限を与えない
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      DATA_DIR: /data
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY を .env に設定してください（openssl rand -base64 32）}
+      TRUST_PROXY: "1"
+      SECURE_COOKIE: "1"
+    volumes:
+      - app-data:/data
+    expose:
+      - "8787"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN を .env に設定してください}
+
+volumes:
+  app-data:
+  caddy-data:

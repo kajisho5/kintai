@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{BRAND_NAME}} | 中小企業向けの勤怠管理・36協定の上限チェック</title>
+    <meta name="description" content="打刻から月次集計、36協定の月末見込まで。1人あたり月額{{PRICE}}円（税抜）・初期費用0円、{{TRIAL_DAYS}}日間は無料でお試しいただけます。" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="{{BRAND_NAME}} | 中小企業向けの勤怠管理" />
+    <meta property="og:description" content="打刻・月次集計・36協定の月末見込・申請承認・有給管理。1人あたり月額{{PRICE}}円（税抜）。" />
+    <meta name="theme-color" content="#1d3a5c" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 256 256%22 width=%22256%22 height=%22256%22 role=%22img%22 aria-label=%22tokisuke%22%3E%3Crect width=%22256%22 height=%22256%22 rx=%2258%22 fill=%22%2327498C%22/%3E%3Cg transform=%22translate%2831 -7%29 scale%281.0%29%22%3E%3Cpath fill=%22%23FFFFFF%22 d=%22M89.9 148Q89.9 126.5 105.1 111.2Q120.4 96 141.9 96Q163.4 96 178.7 111.2Q193.9 126.5 193.9 148Q193.9 169.5 178.7 184.8Q163.4 200 141.9 200Q120.4 200 105.1 184.8Q89.9 169.5 89.9 148ZM49.4 73.6V96H69.9Q72.5 96 74.9 97Q77.3 98 79.1 99.8Q80.9 101.6 81.9 104Q82.9 106.4 82.9 109Q82.9 111.6 81.9 114Q80.9 116.4 79.1 118.2Q77.3 120 74.9 121Q72.5 122 69.9 122H49.4V155.8Q49.4 163.3 54.7 168.7Q60.1 174 67.6 174Q70.2 174 72.6 175Q75 176 76.8 177.8Q78.6 179.6 79.6 182Q80.6 184.4 80.6 187Q80.6 189.6 79.6 192Q78.6 194.4 76.8 196.2Q75 198 72.6 199Q70.2 200 67.6 200Q49.3 200 36.3 187.1Q23.4 174.1 23.4 155.8V122H13Q10.4 122 8 121Q5.6 120 3.8 118.2Q2 116.4 1 114Q0 111.6 0 109Q0 106.4 1 104Q2 101.6 3.8 99.8Q5.6 98 8 97Q10.4 96 13 96H23.4V73.6Q23.4 71 24.4 68.6Q25.4 66.2 27.2 64.4Q29 62.6 31.4 61.6Q33.8 60.6 36.4 60.6Q39 60.6 41.4 61.6Q43.8 62.6 45.6 64.4Q47.4 66.2 48.4 68.6Q49.4 71 49.4 73.6ZM115.9 148Q115.9 158.8 123.5 166.4Q131.1 174 141.9 174Q152.7 174 160.3 166.4Q167.9 158.8 167.9 148Q167.9 137.2 160.3 129.6Q152.7 122 141.9 122Q131.1 122 123.5 129.6Q115.9 137.2 115.9 148Z%22/%3E%3Cpath fill=%22%23F27A63%22 d=%22M136.1 143.1 149.4 127.3Q150.4 126.2 151.7 125.5Q153.1 124.8 154.6 124.7Q156 124.6 157.5 125Q158.9 125.5 160.1 126.4Q161.2 127.4 161.9 128.7Q162.6 130.1 162.7 131.6Q162.8 133 162.4 134.5Q161.9 135.9 161 137.1L147.7 152.9Q146.7 154 145.4 154.7Q144 155.4 142.5 155.5Q141.1 155.6 139.6 155.2Q138.2 154.7 137 153.8Q135.9 152.8 135.2 151.5Q134.5 150.1 134.4 148.6Q134.3 147.2 134.7 145.7Q135.2 144.3 136.1 143.1Z%22/%3E%3Ccircle cx=%22141.9%22 cy=%22148%22 r=%228.3%22 fill=%22%23F27A63%22/%3E%3C/g%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./site.css" />
+    <script type="application/ld+json">
+      {"@context":"https://schema.org","@type":"SoftwareApplication","name":"{{BRAND_NAME}}","applicationCategory":"BusinessApplication","operatingSystem":"Web","description":"中小企業向けの勤怠管理。打刻、月次集計、36協定の月末見込、申請承認、有給管理。","offers":{"@type":"Offer","price":"{{PRICE}}","priceCurrency":"JPY","description":"1人あたり月額（税抜）。{{TRIAL_DAYS}}日間の無料トライアルあり"}}
+    </script>
+  </head>
+  <body>
+    <header class="top">
+      <div class="wrap">
+        <a class="logo" href="/">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#1d3a5c"/><path d="M7 22 L14 12 L18 17 L25 8" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="25" cy="8" r="2.4" fill="#0f8a94" stroke="#fff" stroke-width="1.2"/></svg>
+          {{BRAND_NAME}}
+        </a>
+        <nav aria-label="ページ内">
+          <a href="#features">機能</a>
+          <a href="#pricing">料金</a>
+          <a href="#faq">よくある質問</a>
+        </nav>
+        <div class="actions">
+          <a class="btn" href="/app/">ログイン</a>
+          <a class="btn primary" href="/app/#/signup">無料で始める</a>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" style="padding-bottom: 0">
+        <div class="wrap">
+          <h1><span class="nb">勤怠の集計と、</span><span class="nb">残業の上限チェックを、</span><span class="nb">ひとつの画面で。</span></h1>
+          <p class="lead">打刻から月次集計、36協定の月末見込まで。社員が10名でも200名でも、総務の手作業を減らします。1人あたり月額{{PRICE}}円（税抜）、初期費用はかかりません。</p>
+          <div class="cta">
+            <a class="btn primary lg" href="/app/#/signup">{{TRIAL_DAYS}}日間、無料で始める</a>
+            <small>クレジットカードの登録は不要です</small>
+          </div>
+          <figure class="shot" style="margin-bottom: 0">
+            <img src="./img/hero-dashboard.webp" width="1440" height="1050" alt="全社員の本日の勤務を時間軸の帯で一覧するダッシュボード。通常勤務は藍、時間外は山吹で表示し、現在時刻に縦線が入る。" />
+          </figure>
+          <p class="cap">画面はサンプルデータです。実在の人物・企業とは関係ありません。</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>月末の「集計と確認」を、毎日の確認に変えます。</h2>
+          <p class="sub">残業時間の上限は、超えてから気づいては遅い問題です。{{BRAND_NAME}}は、月の途中から見込を出して、先に知らせます。</p>
+          <div class="problems">
+            <div>
+              <h3>集計に時間がかかる</h3>
+              <p>日8時間・週40時間を超えた時間、深夜、法定休日の労働を、打刻から自動で集計します。休憩を差し引いた実働で計算します。</p>
+            </div>
+            <div>
+              <h3>残業の上限が気になる</h3>
+              <p>月45時間・年360時間、特別条項の年720時間・年6回、単月100時間未満、2〜6か月平均80時間。上限に近づいた社員を、月末の見込つきで一覧します。</p>
+            </div>
+            <div>
+              <h3>夜勤・変形・フレックスもある</h3>
+              <p>夜をまたぐ勤務、1か月・1年・1週間単位の変形労働時間制、フレックスタイム制（清算期間3か月まで）の時間外を、法令の判定順どおりに集計します。シフトの登録、締め日の設定にも対応しています。</p>
+            </div>
+            <div>
+              <h3>申請と有給が散らばる</h3>
+              <p>残業・休日出勤・有給・打刻修正の申請を、ひとつの画面で承認します。有給の付与日数と、年5日の取得義務の進み具合も確認できます。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="alt" id="features">
+        <div class="wrap">
+          <div class="feature">
+            <div class="text">
+              <h3>36協定の上限を、見込つきでチェック</h3>
+              <p>月別の時間外労働をグラフで確認でき、特別条項を使った回数や、年の累計も一目で分かります。</p>
+              <ul>
+                <li>月45時間への接近を、超える前に警告</li>
+                <li>特別条項の適用回数（年6回まで）を自動で数える</li>
+                <li>会社ごとに、特別条項の有無・協定の起算月を設定</li>
+              </ul>
+            </div>
+            <figure class="shot"><img src="./img/rule-check.webp" width="1440" height="590" loading="lazy" alt="月別の時間外労働の棒グラフと、36協定のチェック結果。月45時間の基準線と、年累計・特別条項の適用回数を表示する。" /></figure>
+          </div>
+          <div class="feature flip">
+            <div class="text">
+              <h3>打刻は、ブラウザから1タップ</h3>
+              <p>出勤・退勤・休憩を、パソコンでもスマートフォンでも記録できます。時刻は端末ではなくサーバーが記録するので、端末の時計を変えても改ざんできません。</p>
+              <ul>
+                <li>打刻の訂正は申請と承認で。履歴は消えずに残る</li>
+                <li>打刻漏れ・退勤忘れを、月次で自動検出</li>
+                <li>共用のタブレットで、ICカードか社員ID＋暗証番号で打刻</li>
+                <li>位置情報で、打刻した場所の確認（会社が設定したとき）</li>
+                <li>給与計算用に、月次集計・日別明細をCSVで書き出し</li>
+              </ul>
+            </div>
+            <figure class="shot"><img src="./img/punch.webp" width="1210" height="640" loading="lazy" alt="大きな時計と、出勤・退勤・休憩のボタンがある打刻画面。" /></figure>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>はじめるのに、難しい設定はいりません。</h2>
+          <p class="sub">社員の登録は、ExcelのCSVでまとめて取り込めます。</p>
+          <ol class="steps">
+            <li><b>会社を登録する</b><p>会社名とメールアドレスだけ。企業IDを決めれば、すぐに使えます。</p></li>
+            <li><b>社員を取り込む</b><p>テンプレートに社員を入力して取り込み。一時パスワードは、本人が初回ログインで変更します。</p></li>
+            <li><b>打刻を始める</b><p>社員にログイン方法を伝えれば、その日から打刻できます。</p></li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="alt" id="pricing">
+        <div class="wrap">
+          <h2>料金は、使った人数ぶんだけ。</h2>
+          <p class="sub">在職中の社員の人数で、月額が決まります。月の途中で増えたり退職したりした場合は、日割りで精算されます。</p>
+          <div class="price">
+            <div>
+              <div class="amount">¥{{PRICE}}<small>/ 人・月（税抜）</small></div>
+              <p class="note">例: 30名の場合、月額 ¥{{PRICE_30}}（税抜）。消費税は別途かかります。</p>
+            </div>
+            <ul>
+              <li><span>初期費用</span><span>0円</span></li>
+              <li><span>無料トライアル</span><span>{{TRIAL_DAYS}}日間・カード登録不要</span></li>
+              <li><span>最低利用期間・契約人数の下限</span><span>なし</span></li>
+              <li><span>お支払い</span><span>クレジットカード</span></li>
+              <li><span>解約</span><span>管理画面からいつでも</span></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>ご利用前に、ご確認ください。</h2>
+          <p class="sub">次の機能には、まだ対応していません。必要な場合は、先に無料トライアルで運用に合うかをお試しください。</p>
+          <div class="limits">
+            <ul>
+              <li>指紋・顔などの生体認証による打刻</li>
+              <li>給与計算ソフトとの直接連携（集計結果はCSVで書き出せます）</li>
+            </ul>
+            <ul>
+              <li>就業規則・労使協定の内容の確認（設定は、貴社の規則に合わせてください）</li>
+              <li>労働基準法の判断の保証（集計・警告は参考情報です）</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="alt" id="faq">
+        <div class="wrap">
+          <h2>よくある質問</h2>
+          <details><summary>社員にもアカウントが必要ですか？</summary><p>はい。社員ごとに社員IDとパスワードでログインして、打刻・申請を行います。管理者がまとめて登録できます。メールアドレスを持たないパート・アルバイトの方も、社員IDだけで利用できます。</p></details>
+          <details><summary>他社のデータと混ざることはありませんか？</summary><p>データは会社ごとに別のデータベースに分けて保存しています。ログインは企業ID・社員ID・パスワードで行い、ログインした会社のデータベースにだけ接続する設計です。</p></details>
+          <details><summary>退職した社員の記録は残りますか？</summary><p>退職処理をしても、在籍していた月の勤怠・申請の記録は残ります。退職者は課金の人数に数えません。</p></details>
+          <details><summary>解約したらデータはどうなりますか？</summary><p>解約後は閲覧のみとなり、管理画面から全データを書き出せます。保管期間と削除については、利用規約をご確認ください。</p></details>
+          <details><summary>法律の改正には対応しますか？</summary><p>祝日・割増・上限などの計算ルールは、法令の改正にあわせて更新します。ただし、集計と警告は参考情報であり、法的な判断を保証するものではありません。実際の労務管理は、社会保険労務士などにもご相談ください。</p></details>
+          <details><summary>請求書・領収書は発行されますか？</summary><p>お支払いごとに、請求書・領収書をStripeの管理ページからダウンロードできます。</p></details>
+        </div>
+      </section>
+
+      <section class="final">
+        <div class="wrap">
+          <h2>まずは{{TRIAL_DAYS}}日間、お試しください。</h2>
+          <p>登録に必要なのは、会社名とメールアドレスなどの入力だけです。クレジットカードは不要です。</p>
+          <a class="btn primary lg" href="/app/#/signup">無料で始める</a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap">
+        <div>© {{BRAND_NAME}}　{{OP_NAME}}</div>
+        <nav aria-label="規約">
+          <a href="/terms">利用規約</a>
+          <a href="/privacy">プライバシーポリシー</a>
+          <a href="/tokushoho">特定商取引法に基づく表記</a>
+          <a href="mailto:{{OP_EMAIL}}">お問い合わせ</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

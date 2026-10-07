@@ -1,0 +1,8 @@
+node_modules
+dist
+dist-server
+data
+backups
+.git
+.env
+docs/screenshots

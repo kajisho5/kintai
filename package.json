@@ -1,0 +1,50 @@
+{
+  "name": "kintai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:server": "tsx watch src/server/index.ts",
+    "build": "tsc --noEmit && vite build && npm run build:server",
+    "start": "node --disable-warning=ExperimentalWarning dist-server/index.js",
+    "db:seed": "tsx src/server/seed-cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "ops": "node --disable-warning=ExperimentalWarning dist-server/cli.js",
+    "build:server": "esbuild src/server/index.ts src/server/cli.ts --bundle --platform=node --format=esm --packages=external --target=node22 --outdir=dist-server --log-level=warning",
+    "start:dev": "tsx src/server/index.ts",
+    "ops:dev": "tsx src/server/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/nodemailer": "^8.0.2",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "esbuild": "^0.28.2",
+    "playwright": "^1.63.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.3",
+    "vitest": "^5.0.3"
+  },
+  "dependencies": {
+    "@fontsource/barlow": "^5.3.0",
+    "@fontsource/barlow-semi-condensed": "^5.3.0",
+    "@fontsource/biz-udpgothic": "^5.3.0",
+    "@hono/node-server": "^2.1.3",
+    "hono": "^4.13.13",
+    "lucide-react": "^1.52.0",
+    "nodemailer": "^10.0.15",
+    "qrcode": "^1.5.4",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "stripe": "^23.0.0",
+    "zod": "^4.6.5"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}
