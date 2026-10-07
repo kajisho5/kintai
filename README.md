@@ -1,4 +1,4 @@
-# Kintai（仮名）
+# トキスケ（tokisuke）
 
 中小企業向けの勤怠管理 SaaS。CYBER XEED など既存製品を調査し（[docs/competitor-research.md](docs/competitor-research.md)）、
 低価格・初期費用なし・36協定の上限チェックを軸にした代替を目指しています。
